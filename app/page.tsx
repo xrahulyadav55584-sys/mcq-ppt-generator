@@ -279,24 +279,17 @@ export default function Home() {
     alert("🎉 पूरा प्रश्न-पत्र क्लिपबोर्ड में कॉपी हो गया है!");
   };
 
-  // --- SMART & BULLETPROOF TEXT PARSER ---
+  // --- GUARANTEED SIMPLE & WORKING TEXT PARSER ---
   const parseRawTextToMCQs = (rawText: string): MCQ[] => {
     if (!rawText || !rawText.trim()) return [];
 
     let detectedTopic = "सामान्य ज्ञान (GK)";
 
-    // यदि शीर्षक में विषय का नाम हो (उदा. 🌍 भूगोल — 20 महत्वपूर्ण प्रश्न)
-    const topicHeaderMatch = rawText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—|–|-|\d)/i);
-    if (topicHeaderMatch && topicHeaderMatch[1].trim()) {
-      const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
-      if (foundTopic.length > 2) detectedTopic = foundTopic;
-    }
-
-    // प्रश्नों को नंबर (1., 2., Q1 आदि) के आधार पर अलग करें
-    const blocks = rawText.split(/(?=\n?\s*(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+)/gi);
+    // अलग-अलग प्रश्नों के ब्लॉक बनाएं
+    const rawBlocks = rawText.split(/(?=\n?\s*(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+)/gi);
     const parsedMcqs: MCQ[] = [];
 
-    blocks.forEach((block, idx) => {
+    rawBlocks.forEach((block, idx) => {
       const lines = block
         .split("\n")
         .map((l) => l.trim())
@@ -305,74 +298,61 @@ export default function Home() {
       if (lines.length === 0) return;
 
       let qText = "";
-      let rawOpts: { [key: string]: string } = {};
-      let optsArray: string[] = [];
-      let ansText = "";
+      let optA = "", optB = "", optC = "", optD = "";
+      let rawAnsString = "";
       let expText = "";
 
       lines.forEach((line) => {
-        const cleanLine = line.replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+        // साफ़ की हुई लाइन
+        const lineClean = line.replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
 
-        // 1. प्रश्न की पंक्ति पहचानें
-        if (!qText && cleanLine.match(/^(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+/i)) {
-          qText = cleanLine.replace(/^(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+\s*/i, "").trim();
-        } 
-        // 2. विकल्प A, B, C, D पहचानें
-        else if (cleanLine.match(/^[A-D][\.\:\-\)\s]+/i)) {
-          const letter = cleanLine.charAt(0).toUpperCase();
-          const optContent = cleanLine.replace(/^[A-D][\.\:\-\)\s]+\s*/i, "").trim();
-          rawOpts[letter] = cleanText(optContent);
-        } 
-        // 3. उत्तर पहचानें
-        else if (
-          cleanLine.includes("उत्तर") || 
-          cleanLine.toLowerCase().includes("answer") || 
-          cleanLine.toLowerCase().includes("ans")
-        ) {
-          let ansValue = cleanLine.replace(/^.*?(?:उत्तर|Answer|Ans)[\:\-\s]*/i, "").trim();
-          const optMatch = ansValue.match(/^([A-D])[\.\:\-\)\s]*/i);
-          if (optMatch) {
-            const letter = optMatch[1].toUpperCase();
-            ansValue = rawOpts[letter] || ansValue.replace(/^([A-D])[\.\:\-\)\s]*/i, "").trim();
-          } else {
-            ansValue = ansValue.replace(/^([A-D])[\.\:\-\)\s]*/i, "").trim();
-          }
-          ansText = cleanText(ansValue);
-        } 
-        // 4. व्याख्या पहचानें (इमोजी / बिना स्पेस / किसी भी भाषा में)
-        else if (
-          cleanLine.includes("व्याख्या") || 
-          cleanLine.toLowerCase().includes("explanation") || 
-          cleanLine.toLowerCase().includes("exp")
-        ) {
-          expText = cleanLine.replace(/^.*?(?:व्याख्या|Explanation|Exp)[\:\-\s]*/i, "").trim();
+        // 1. प्रश्न
+        if (!qText && lineClean.match(/^(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+/i)) {
+          qText = lineClean.replace(/^(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+\s*/i, "").trim();
+        }
+        // 2. ऑप्शंस
+        else if (lineClean.match(/^A[\.\:\-\)\s]+/i)) {
+          optA = lineClean.replace(/^A[\.\:\-\)\s]+\s*/i, "").trim();
+        } else if (lineClean.match(/^B[\.\:\-\)\s]+/i)) {
+          optB = lineClean.replace(/^B[\.\:\-\)\s]+\s*/i, "").trim();
+        } else if (lineClean.match(/^C[\.\:\-\)\s]+/i)) {
+          optC = lineClean.replace(/^C[\.\:\-\)\s]+\s*/i, "").trim();
+        } else if (lineClean.match(/^D[\.\:\-\)\s]+/i)) {
+          optD = lineClean.replace(/^D[\.\:\-\)\s]+\s*/i, "").trim();
+        }
+        // 3. उत्तर
+        else if (lineClean.includes("उत्तर") || lineClean.toLowerCase().includes("answer")) {
+          rawAnsString = lineClean.replace(/^.*?(?:उत्तर|Answer|Ans)[\:\-\s]*/i, "").trim();
+        }
+        // 4. व्याख्या
+        else if (lineClean.includes("व्याख्या") || lineClean.toLowerCase().includes("explanation")) {
+          expText = lineClean.replace(/^.*?(?:व्याख्या|Explanation|Exp)[\:\-\s]*/i, "").trim();
         }
       });
 
-      if (Object.keys(rawOpts).length > 0) {
-        optsArray = [
-          rawOpts["A"] || "",
-          rawOpts["B"] || "",
-          rawOpts["C"] || "",
-          rawOpts["D"] || "",
-        ];
+      const options = [cleanText(optA), cleanText(optB), cleanText(optC), cleanText(optD)];
+
+      // सही उत्तर ढूँढना (A, B, C, D से या पूरे नाम से)
+      let finalAns = options[0] || "";
+      if (rawAnsString) {
+        const uppercaseAns = rawAnsString.toUpperCase();
+        if (uppercaseAns.startsWith("A")) finalAns = options[0];
+        else if (uppercaseAns.startsWith("B")) finalAns = options[1];
+        else if (uppercaseAns.startsWith("C")) finalAns = options[2];
+        else if (uppercaseAns.startsWith("D")) finalAns = options[3];
+        else {
+          const matched = options.find((o) => o && rawAnsString.includes(o));
+          if (matched) finalAns = matched;
+        }
       }
 
-      if (qText && optsArray.some((o) => o !== "")) {
-        let matchedAns = ansText;
-
-        if (!optsArray.includes(ansText)) {
-          const found = optsArray.find((o) => o.toLowerCase() === ansText.toLowerCase());
-          if (found) matchedAns = found;
-          else if (optsArray[0]) matchedAns = optsArray[0];
-        }
-
+      if (qText && options.some((o) => o !== "")) {
         parsedMcqs.push({
           id: Date.now() + idx,
           topic: detectedTopic,
           question: cleanText(qText),
-          options: optsArray,
-          answer: matchedAns,
+          options: options,
+          answer: finalAns,
           explanation: expText ? cleanText(expText) : "व्याख्या उपलब्ध नहीं है।",
           tag: "GK Set",
         });
