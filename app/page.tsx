@@ -128,7 +128,6 @@ export default function Home() {
     }
   }, [currentIndex]);
 
-  // Helper Speech Function
   const speakText = (text: string) => {
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
@@ -147,7 +146,6 @@ export default function Home() {
     }
   };
 
-  // --- SAFE GEMINI API & TTS VOICE HANDLER ---
   const handleGenerateGeminiVoice = async () => {
     if (!currentMCQ?.question) {
       alert("कोई प्रश्न उपलब्ध नहीं है!");
@@ -198,7 +196,6 @@ export default function Home() {
     }
   };
 
-  // Upload Custom Voice File
   const handleCustomAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -279,13 +276,21 @@ export default function Home() {
     alert("🎉 पूरा प्रश्न-पत्र क्लिपबोर्ड में कॉपी हो गया है!");
   };
 
-  // 🎯 FIXED EXPLANATION PARSER
+  // 🎯 PERFECT PARSER FOR 20 QUESTIONS & EXPLANATION
   const parseRawTextToMCQs = (rawText: string): MCQ[] => {
     if (!rawText || !rawText.trim()) return [];
 
     let detectedTopic = "सामान्य ज्ञान (GK)";
 
-    const rawBlocks = rawText.split(/(?=\n?\s*(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+)/gi);
+    // यदि शीर्षक में विषय का नाम हो
+    const topicHeaderMatch = rawText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—|–|-|\d)/i);
+    if (topicHeaderMatch && topicHeaderMatch[1].trim()) {
+      const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+      if (foundTopic.length > 2) detectedTopic = foundTopic;
+    }
+
+    // केवल प्रश्न संख्याओं (1., 2., 3. आदि) से स्प्लिट करें
+    const rawBlocks = rawText.split(/(?=\n\s*\b\d{1,3}\b[\.\:\-\)\s]+)/gi);
     const parsedMcqs: MCQ[] = [];
 
     rawBlocks.forEach((block, idx) => {
@@ -305,11 +310,11 @@ export default function Home() {
       lines.forEach((line) => {
         const cleanLine = line.replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
 
-        // 1. प्रश्न
-        if (!qText && /^(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+/i.test(cleanLine)) {
-          qText = cleanLine.replace(/^(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+\s*/i, "").trim();
+        // 1. प्रश्न की लाइन (1., 2. आदि)
+        if (!qText && /^\b\d{1,3}\b[\.\:\-\)\s]+/i.test(cleanLine)) {
+          qText = cleanLine.replace(/^\b\d{1,3}\b[\.\:\-\)\s]+\s*/i, "").trim();
         }
-        // 2. ऑप्शंस
+        // 2. विकल्प A, B, C, D
         else if (/^A[\.\:\-\)\s]+/i.test(cleanLine)) {
           optA = cleanLine.replace(/^A[\.\:\-\)\s]+\s*/i, "").trim();
         } else if (/^B[\.\:\-\)\s]+/i.test(cleanLine)) {
@@ -327,13 +332,16 @@ export default function Home() {
             ansLetter = letterMatch[1].toUpperCase();
           }
         }
-        // 4. व्याख्या (इमोजी और कोलन को आसानी से साफ़ करता है)
+        // 4. व्याख्या (सटीक तरीके से शब्द निकालने के लिए)
         else if (
-          cleanLine.includes("व्याख्या") || 
-          cleanLine.toLowerCase().includes("explanation") || 
-          cleanLine.toLowerCase().includes("exp")
+          line.includes("व्याख्या") || 
+          line.toLowerCase().includes("explanation") || 
+          line.toLowerCase().includes("exp")
         ) {
-          expText = line.replace(/^.*?(?:व्याख्या|Explanation|Exp)\s*[\:\-\s]*/iu, "").trim();
+          const expMatch = line.split(/(?:व्याख्या|Explanation|Exp)[\:\-\s]*/i);
+          if (expMatch.length > 1) {
+            expText = expMatch.slice(1).join("").trim();
+          }
         }
       });
 
