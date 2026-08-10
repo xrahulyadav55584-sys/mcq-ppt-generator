@@ -281,9 +281,10 @@ export default function Home() {
     alert("🎉 पूरा प्रश्न-पत्र क्लिपबोर्ड में कॉपी हो गया है!");
   };
 
-  // Text Parser
+  // --- ENHANCED SMART TEXT PARSER ---
   const parseRawTextToMCQs = (rawText: string): MCQ[] => {
-    const blocks = rawText.split(/(?=\n?\s*(?:प्रश्न\s*\d+|Q\d+)[\.\:\-\s]+)/gi);
+    // Split by numbers or Q pattern (e.g. 1., 8., Q1., Q8-)
+    const blocks = rawText.split(/(?=\n?\s*(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+)/gi);
     const parsedMcqs: MCQ[] = [];
 
     let detectedTopic = "सामान्य ज्ञान (GK)";
@@ -303,17 +304,30 @@ export default function Home() {
       let expText = "";
 
       lines.forEach((line) => {
-        if (!qText && line.match(/^(?:प्रश्न\s*\d+|Q\d+)[\.\:\-\s]+/i)) {
-          qText = line.replace(/^(?:प्रश्न\s*\d+|Q\d+)[\.\:\-\s]+\s*/i, "").trim();
-        } else if (line.match(/^[A-D][\.\:\-\)\s]+/i)) {
+        // Match Question Start
+        if (!qText && line.match(/^(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+/i)) {
+          qText = line.replace(/^(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+\s*/i, "").trim();
+        } 
+        // Match Option lines (A., B., C., D. / A), B), C), D))
+        else if (line.match(/^[A-D][\.\:\-\)\s]+/i)) {
           const letter = line.charAt(0).toUpperCase();
           const optContent = line.replace(/^[A-D][\.\:\-\)\s]+\s*/i, "").trim();
           rawOpts[letter] = cleanText(optContent);
-        } else if (line.match(/(?:सही उत्तर|उत्तर|Answer|Ans)[\:\s]+/i)) {
-          let ansValue = line.replace(/.*?(?:सही उत्तर|उत्तर|Answer|Ans)[\:\s]+\s*/i, "").trim();
+        } 
+        // Match Answer line
+        else if (line.match(/(?:सही उत्तर|उत्तर|Answer|Ans)[\:\-\s]+/i)) {
+          let ansValue = line.replace(/.*?(?:सही उत्तर|उत्तर|Answer|Ans)[\:\-\s]+\s*/i, "").trim();
+          // Extract option letter if provided (e.g., "B. इंदिरा पॉइंट" -> "B")
+          const optMatch = ansValue.match(/^([A-D])[\.\:\-\)\s]*/i);
+          if (optMatch) {
+            const letter = optMatch[1].toUpperCase();
+            ansValue = rawOpts[letter] || ansValue;
+          }
           ansValue = ansValue.replace(/^[A-D][\.\:\-\)\s]+\s*/i, "");
           ansText = cleanText(ansValue);
-        } else if (line.match(/(?:व्याख्या|Explanation|Exp)[\:\-\s]+/i)) {
+        } 
+        // Match Explanation line
+        else if (line.match(/(?:व्याख्या|Explanation|Exp)[\:\-\s]+/i)) {
           expText = line.replace(/.*?(?:व्याख्या|Explanation|Exp)[\:\-\s]+\s*/i, "").trim();
         }
       });
@@ -329,6 +343,8 @@ export default function Home() {
 
       if (qText && optsArray.some((o) => o !== "")) {
         let matchedAns = ansText;
+
+        // Auto-resolve Option letter to Option text if matched
         if (!optsArray.includes(ansText)) {
           const found = optsArray.find((o) => o.toLowerCase() === ansText.toLowerCase());
           if (found) matchedAns = found;
@@ -365,7 +381,7 @@ export default function Home() {
       setShowPasteBox(false);
       alert(`🎉 सफलता! व्याख्या के साथ पूरे ${parsedMcqs.length} प्रश्न लोड हो चुके हैं!`);
     } else {
-      alert("पेस्ट किए गए टेक्स्ट को पढ़ने में समस्या आई।");
+      alert("पेस्ट किए गए टेक्स्ट को पढ़ने में समस्या आई। कृपया प्रश्न और उत्तर का फॉर्मेट जाँचें।");
     }
   };
 
