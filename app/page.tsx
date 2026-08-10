@@ -78,7 +78,7 @@ const cleanText = (text: string) => {
   if (!text) return "";
   return text
     .replace(/[\*\_\`]/g, "")
-    .replace(/^[✅\✔\•\-\s]+/g, "")
+    .replace(/^[🌍📖✅✔•\-\s]+/gu, "")
     .trim();
 };
 
@@ -158,7 +158,6 @@ export default function Home() {
 
     const scriptText = `प्रश्न ${currentIndex + 1}. ${currentMCQ.question}. विकल्प A: ${currentMCQ.options[0] || ""}. विकल्प B: ${currentMCQ.options[1] || ""}. विकल्प C: ${currentMCQ.options[2] || ""}. विकल्प D: ${currentMCQ.options[3] || ""}. सही उत्तर है: ${currentMCQ.answer || ""}. व्याख्या: ${currentMCQ.explanation || ""}`;
 
-    // If Key is provided, validate with Gemini API
     if (geminiApiKey.trim()) {
       try {
         const response = await fetch(
@@ -188,7 +187,6 @@ export default function Home() {
       }
     }
 
-    // Always play natural speech without throwing error
     speakText(scriptText);
     setIsGeneratingAudio(false);
   };
@@ -281,13 +279,21 @@ export default function Home() {
     alert("🎉 पूरा प्रश्न-पत्र क्लिपबोर्ड में कॉपी हो गया है!");
   };
 
-  // --- ENHANCED SMART TEXT PARSER ---
+  // --- SMART & ROBUST TEXT PARSER ---
   const parseRawTextToMCQs = (rawText: string): MCQ[] => {
-    // Split by numbers or Q pattern (e.g. 1., 8., Q1., Q8-)
+    if (!rawText) return [];
+
+    // शीर्षक से विषय पहचानने का प्रयास (उदा. 🌍 भूगोल — 20 महत्वपूर्ण प्रश्न)
+    let detectedTopic = "सामान्य ज्ञान (GK)";
+    const topicHeaderMatch = rawText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—|–|-|\d)/i);
+    if (topicHeaderMatch && topicHeaderMatch[1].trim()) {
+      const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+      if (foundTopic.length > 2) detectedTopic = foundTopic;
+    }
+
+    // प्रश्नों को अलग करने का रेगेक्स
     const blocks = rawText.split(/(?=\n?\s*(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+)/gi);
     const parsedMcqs: MCQ[] = [];
-
-    let detectedTopic = "सामान्य ज्ञान (GK)";
 
     blocks.forEach((block, idx) => {
       const lines = block
@@ -304,31 +310,34 @@ export default function Home() {
       let expText = "";
 
       lines.forEach((line) => {
-        // Match Question Start
-        if (!qText && line.match(/^(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+/i)) {
-          qText = line.replace(/^(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+\s*/i, "").trim();
+        // लाइन से इमोजी और स्पेशल सिंबल साफ करके अस्थायी रूप से चेक करें
+        const cleanLine = line.replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+
+        // 1. प्रश्न की लाइन
+        if (!qText && cleanLine.match(/^(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+/i)) {
+          qText = cleanLine.replace(/^(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+\s*/i, "").trim();
         } 
-        // Match Option lines (A., B., C., D. / A), B), C), D))
-        else if (line.match(/^[A-D][\.\:\-\)\s]+/i)) {
-          const letter = line.charAt(0).toUpperCase();
-          const optContent = line.replace(/^[A-D][\.\:\-\)\s]+\s*/i, "").trim();
+        // 2. विकल्प A, B, C, D
+        else if (cleanLine.match(/^[A-D][\.\:\-\)\s]+/i)) {
+          const letter = cleanLine.charAt(0).toUpperCase();
+          const optContent = cleanLine.replace(/^[A-D][\.\:\-\)\s]+\s*/i, "").trim();
           rawOpts[letter] = cleanText(optContent);
         } 
-        // Match Answer line
-        else if (line.match(/(?:सही उत्तर|उत्तर|Answer|Ans)[\:\-\s]+/i)) {
-          let ansValue = line.replace(/.*?(?:सही उत्तर|उत्तर|Answer|Ans)[\:\-\s]+\s*/i, "").trim();
-          // Extract option letter if provided (e.g., "B. इंदिरा पॉइंट" -> "B")
+        // 3. उत्तर पहचानें
+        else if (cleanLine.match(/(?:सही उत्तर|उत्तर|Answer|Ans)[\:\-\s]+/i)) {
+          let ansValue = cleanLine.replace(/.*?(?:सही उत्तर|उत्तर|Answer|Ans)[\:\-\s]+\s*/i, "").trim();
           const optMatch = ansValue.match(/^([A-D])[\.\:\-\)\s]*/i);
           if (optMatch) {
             const letter = optMatch[1].toUpperCase();
-            ansValue = rawOpts[letter] || ansValue;
+            ansValue = rawOpts[letter] || ansValue.replace(/^[A-D][\.\:\-\)\s]+\s*/i, "");
+          } else {
+            ansValue = ansValue.replace(/^[A-D][\.\:\-\)\s]+\s*/i, "");
           }
-          ansValue = ansValue.replace(/^[A-D][\.\:\-\)\s]+\s*/i, "");
           ansText = cleanText(ansValue);
         } 
-        // Match Explanation line
-        else if (line.match(/(?:व्याख्या|Explanation|Exp)[\:\-\s]+/i)) {
-          expText = line.replace(/.*?(?:व्याख्या|Explanation|Exp)[\:\-\s]+\s*/i, "").trim();
+        // 4. व्याख्या पहचानें
+        else if (cleanLine.match(/(?:व्याख्या|Explanation|Exp)[\:\-\s]+/i)) {
+          expText = cleanLine.replace(/.*?(?:व्याख्या|Explanation|Exp)[\:\-\s]+\s*/i, "").trim();
         }
       });
 
@@ -344,7 +353,6 @@ export default function Home() {
       if (qText && optsArray.some((o) => o !== "")) {
         let matchedAns = ansText;
 
-        // Auto-resolve Option letter to Option text if matched
         if (!optsArray.includes(ansText)) {
           const found = optsArray.find((o) => o.toLowerCase() === ansText.toLowerCase());
           if (found) matchedAns = found;
