@@ -74,7 +74,6 @@ const DESIGN_THEMES = {
   },
 };
 
-// 🛠️ SAFE CLEAN TEXT FUNCTION
 const cleanText = (text: string) => {
   if (!text) return "";
   return text
@@ -280,13 +279,12 @@ export default function Home() {
     alert("🎉 पूरा प्रश्न-पत्र क्लिपबोर्ड में कॉपी हो गया है!");
   };
 
-  // 🎯 PERFECT & BULLETPROOF PARSER
+  // 🎯 FIXED EXPLANATION PARSER
   const parseRawTextToMCQs = (rawText: string): MCQ[] => {
     if (!rawText || !rawText.trim()) return [];
 
     let detectedTopic = "सामान्य ज्ञान (GK)";
 
-    // प्रश्नों के ब्लॉक बनाएं
     const rawBlocks = rawText.split(/(?=\n?\s*(?:प्रश्न\s*\d+|\b\d+\b|Q\d+)[\.\:\-\)\s]+)/gi);
     const parsedMcqs: MCQ[] = [];
 
@@ -321,7 +319,7 @@ export default function Home() {
         } else if (/^D[\.\:\-\)\s]+/i.test(cleanLine)) {
           optD = cleanLine.replace(/^D[\.\:\-\)\s]+\s*/i, "").trim();
         }
-        // 3. उत्तर पहचानें
+        // 3. उत्तर
         else if (cleanLine.includes("उत्तर") || cleanLine.toLowerCase().includes("answer") || cleanLine.toLowerCase().includes("ans")) {
           rawAnsLine = cleanLine;
           const letterMatch = cleanLine.match(/(?:उत्तर|Answer|Ans)[\:\-\s]*([A-D])/i);
@@ -329,22 +327,25 @@ export default function Home() {
             ansLetter = letterMatch[1].toUpperCase();
           }
         }
-        // 4. व्याख्या पहचानें
-        else if (cleanLine.includes("व्याख्या") || cleanLine.toLowerCase().includes("explanation") || cleanLine.toLowerCase().includes("exp")) {
-          expText = cleanLine.replace(/^.*?(?:व्याख्या|Explanation|Exp)[\:\-\s]*/i, "").trim();
+        // 4. व्याख्या (इमोजी और कोलन को आसानी से साफ़ करता है)
+        else if (
+          cleanLine.includes("व्याख्या") || 
+          cleanLine.toLowerCase().includes("explanation") || 
+          cleanLine.toLowerCase().includes("exp")
+        ) {
+          expText = line.replace(/^.*?(?:व्याख्या|Explanation|Exp)\s*[\:\-\s]*/iu, "").trim();
         }
       });
 
       const options = [optA.trim(), optB.trim(), optC.trim(), optD.trim()];
 
-      // सही उत्तर का चुनाव
+      // सही उत्तर चुनना
       let finalAns = options[0] || "";
       if (ansLetter === "A") finalAns = options[0];
       else if (ansLetter === "B") finalAns = options[1];
       else if (ansLetter === "C") finalAns = options[2];
       else if (ansLetter === "D") finalAns = options[3];
       else if (rawAnsLine) {
-        // यदि A/B/C/D उत्तर में न मिले तो ऑप्शन टेक्स्ट मैच करें
         const matched = options.find((o) => o && rawAnsLine.includes(o));
         if (matched) finalAns = matched;
       }
