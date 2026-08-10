@@ -276,25 +276,33 @@ export default function Home() {
     alert("🎉 पूरा प्रश्न-पत्र क्लिपबोर्ड में कॉपी हो गया है!");
   };
 
-  // 🎯 PERFECT PARSER FOR 20 QUESTIONS & EXPLANATION
+  // 🎯 PERFECT & BULLETPROOF PARSER FOR ALL 20 QUESTIONS & EXPLANATIONS
   const parseRawTextToMCQs = (rawText: string): MCQ[] => {
     if (!rawText || !rawText.trim()) return [];
+
+    const normalizedText = rawText
+      .replace(/\u00A0/g, " ")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n");
 
     let detectedTopic = "सामान्य ज्ञान (GK)";
 
     // यदि शीर्षक में विषय का नाम हो
-    const topicHeaderMatch = rawText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—|–|-|\d)/i);
+    const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—|–|-|\d)/i);
     if (topicHeaderMatch && topicHeaderMatch[1].trim()) {
       const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
       if (foundTopic.length > 2) detectedTopic = foundTopic;
     }
 
-    // केवल प्रश्न संख्याओं (1., 2., 3. आदि) से स्प्लिट करें
-    const rawBlocks = rawText.split(/(?=\n\s*\b\d{1,3}\b[\.\:\-\)\s]+)/gi);
+    // प्रश्न संख्या (उदा: 1., 2., Q1.) से विभाजन
+    const rawBlocks = normalizedText.split(/(?=\n\s*(?:प्रश्न\s*\d+|\b\d{1,3}\b|Q\d{1,3})[\.\:\-\)\s]+)/gi);
     const parsedMcqs: MCQ[] = [];
 
     rawBlocks.forEach((block, idx) => {
-      const lines = block
+      const trimmedBlock = block.trim();
+      if (!trimmedBlock) return;
+
+      const lines = trimmedBlock
         .split("\n")
         .map((l) => l.trim())
         .filter((l) => l.length > 0);
@@ -305,49 +313,45 @@ export default function Home() {
       let optA = "", optB = "", optC = "", optD = "";
       let ansLetter = "";
       let rawAnsLine = "";
-      let expText = "";
 
+      // 1. प्रश्न की मुख्य पंक्ति ढूँढें
+      for (const line of lines) {
+        const cleanL = line.replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+        if (/^(?:प्रश्न\s*\d+|\b\d{1,3}\b|Q\d{1,3})[\.\:\-\)\s]+/i.test(cleanL)) {
+          qText = cleanL.replace(/^(?:प्रश्न\s*\d+|\b\d{1,3}\b|Q\d{1,3})[\.\:\-\)\s]+\s*/i, "").trim();
+          break;
+        }
+      }
+
+      // यदि पहली ही पंक्ति बिना प्रश्न संख्या के हो
+      if (!qText && lines[0] && !/^[A-D][\.\:\-\)\s]+/i.test(lines[0])) {
+        qText = lines[0].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+      }
+
+      // 2. विकल्प A, B, C, D एवं उत्तर पंक्ति निकालें
       lines.forEach((line) => {
-        const cleanLine = line.replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+        const cleanL = line.replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
 
-        // 1. प्रश्न की लाइन (1., 2. आदि)
-        if (!qText && /^\b\d{1,3}\b[\.\:\-\)\s]+/i.test(cleanLine)) {
-          qText = cleanLine.replace(/^\b\d{1,3}\b[\.\:\-\)\s]+\s*/i, "").trim();
-        }
-        // 2. विकल्प A, B, C, D
-        else if (/^A[\.\:\-\)\s]+/i.test(cleanLine)) {
-          optA = cleanLine.replace(/^A[\.\:\-\)\s]+\s*/i, "").trim();
-        } else if (/^B[\.\:\-\)\s]+/i.test(cleanLine)) {
-          optB = cleanLine.replace(/^B[\.\:\-\)\s]+\s*/i, "").trim();
-        } else if (/^C[\.\:\-\)\s]+/i.test(cleanLine)) {
-          optC = cleanLine.replace(/^C[\.\:\-\)\s]+\s*/i, "").trim();
-        } else if (/^D[\.\:\-\)\s]+/i.test(cleanLine)) {
-          optD = cleanLine.replace(/^D[\.\:\-\)\s]+\s*/i, "").trim();
-        }
-        // 3. उत्तर
-        else if (cleanLine.includes("उत्तर") || cleanLine.toLowerCase().includes("answer") || cleanLine.toLowerCase().includes("ans")) {
-          rawAnsLine = cleanLine;
-          const letterMatch = cleanLine.match(/(?:उत्तर|Answer|Ans)[\:\-\s]*([A-D])/i);
+        if (/^A[\.\:\-\)\s]+/i.test(cleanL)) {
+          optA = cleanL.replace(/^A[\.\:\-\)\s]+\s*/i, "").trim();
+        } else if (/^B[\.\:\-\)\s]+/i.test(cleanL)) {
+          optB = cleanL.replace(/^B[\.\:\-\)\s]+\s*/i, "").trim();
+        } else if (/^C[\.\:\-\)\s]+/i.test(cleanL)) {
+          optC = cleanL.replace(/^C[\.\:\-\)\s]+\s*/i, "").trim();
+        } else if (/^D[\.\:\-\)\s]+/i.test(cleanL)) {
+          optD = cleanL.replace(/^D[\.\:\-\)\s]+\s*/i, "").trim();
+        } else if (cleanL.includes("उत्तर") || cleanL.toLowerCase().includes("answer") || cleanL.toLowerCase().includes("ans")) {
+          rawAnsLine = cleanL;
+          const letterMatch = cleanL.match(/(?:उत्तर|Answer|Ans)[\:\-\s]*([A-D])/i);
           if (letterMatch) {
             ansLetter = letterMatch[1].toUpperCase();
-          }
-        }
-        // 4. व्याख्या (सटीक तरीके से शब्द निकालने के लिए)
-        else if (
-          line.includes("व्याख्या") || 
-          line.toLowerCase().includes("explanation") || 
-          line.toLowerCase().includes("exp")
-        ) {
-          const expMatch = line.split(/(?:व्याख्या|Explanation|Exp)[\:\-\s]*/i);
-          if (expMatch.length > 1) {
-            expText = expMatch.slice(1).join("").trim();
           }
         }
       });
 
       const options = [optA.trim(), optB.trim(), optC.trim(), optD.trim()];
 
-      // सही उत्तर चुनना
+      // 3. सही उत्तर सेट करें
       let finalAns = options[0] || "";
       if (ansLetter === "A") finalAns = options[0];
       else if (ansLetter === "B") finalAns = options[1];
@@ -358,14 +362,31 @@ export default function Home() {
         if (matched) finalAns = matched;
       }
 
+      // 4. व्याख्या निकालें (ब्लॉक में जहाँ भी 'व्याख्या' शब्द मिले, उसके आगे का पूरा टेक्स्ट)
+      let expText = "";
+      const expIdx = trimmedBlock.search(/(?:व्याख्या|Explanation|Exp)[\:\-\s]*/i);
+      if (expIdx !== -1) {
+        const rawExp = trimmedBlock.slice(expIdx);
+        expText = rawExp
+          .replace(/^(?:व्याख्या|Explanation|Exp)[\:\-\s]*/i, "")
+          .replace(/^[📖🌍✅✔•\-\s]+/gu, "")
+          .trim();
+
+        // यदि उत्तर व्याख्या के बाद हो, तो उसे काटें
+        const ansInExp = expText.search(/(?:\n|\r|^)[📖🌍✅✔•\-\s]*(?:उत्तर|Answer|Ans)[\:\-\s]*/i);
+        if (ansInExp !== -1) {
+          expText = expText.slice(0, ansInExp).trim();
+        }
+      }
+
       if (qText && options.some((o) => o !== "")) {
         parsedMcqs.push({
           id: Date.now() + idx,
           topic: detectedTopic,
-          question: qText.trim(),
+          question: qText,
           options: options,
           answer: finalAns,
-          explanation: expText ? expText.trim() : "व्याख्या उपलब्ध नहीं है।",
+          explanation: expText || "व्याख्या उपलब्ध नहीं है।",
           tag: "GK Set",
         });
       }
