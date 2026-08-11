@@ -103,44 +103,45 @@ const cleanText = (text: string) => {
     .trim();
 };
 
-/**
- * 🛠️ DEVANAGARI MATRA REPAIR
- * Re-attaches isolated pre-base 'ि' (U+093F) matras without destroying word spaces.
- */
 const fixMisplacedMatras = (text: string): string => {
   if (!text) return "";
   return text.replace(/\u093F([\u0904-\u0939\u0958-\u095F])/g, "$1\u093F");
 };
 
-/**
- * 📐 EXACT DOCUMENT LAYOUT FORMATTER
- * Formats PDF text into clean, structured lines for Questions, Options, and Answers.
- */
 const formatDocumentStructure = (rawText: string): string => {
   if (!rawText) return "";
 
   let s = fixMisplacedMatras(rawText);
 
-  // Clean up horizontal spacing line by line
   s = s
     .split("\n")
     .map((line) => line.replace(/[ \t]+/g, " ").trim())
     .join("\n");
 
-  // Newline before Questions (Q1, Q2, Q1 [, Question 1, प्रश्न 1)
   s = s.replace(/(?<!\n)\s*(Q\d{1,4}\b|Question\s*\d+|प्रश्न\s*\d+)/gi, "\n\n$1");
-
-  // Separate Options (A), (B), (C), (D) onto individual lines if combined
   s = s.replace(/([^\n])\s*(\([A-Da-d]\))/g, "$1\n$2");
-
-  // Separate Options formatted as A., B., C., D.
   s = s.replace(/([^\n])\s*\b([A-D])[\.\)]\s+(?=[^\n])/g, "$1\n($2) ");
-
-  // Separate Answers and Status lines onto new lines
   s = s.replace(/([^\n])\s*(Your Answer:|Correct Answer:|Correct|Incorrect|Answer:|Ans:|उत्तर:|सही उत्तर:|व्याख्या:|Explanation:)/gi, "$1\n$2");
+  s = s.replace(/\n\s*\(\s*\n/g, "\n");
+  s = s.replace(/\n{3,}/g, "\n\n");
 
-  // Remove stray orphan '(' characters on empty lines
-  s = s.replace(/\n\s*\(\s*\n/g, "\n");    // Limit consecutive blank lines to at most 2   s = s.replace(/\n{3,}/g, "\n\n");    return s.trim(); };  const parseRawTextToMCQs = (rawText: string): MCQ[] => {   if (!rawText \vert{}\vert{} !rawText.trim()) return [];    const normalizedText = formatDocumentStructure(rawText);    let detectedTopic = "सामान्य ज्ञान (GK)";    const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—\vert{}–\vert{}-\vert{}\d)/i);   if (topicHeaderMatch && topicHeaderMatch[1].trim()) {     const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();     if (foundTopic.length > 2) detectedTopic = foundTopic;   }    const rawBlocks = normalizedText.split(/(?=\n\s*(?:Q\d{1,4}\vert{}प्रश्न\s*\d+\vert{}\b\d{1,3}\b)[\.\:\-\)\s\[]+)/gi);
+  return s.trim();
+};
+
+const parseRawTextToMCQs = (rawText: string): MCQ[] => {
+  if (!rawText || !rawText.trim()) return [];
+
+  const normalizedText = formatDocumentStructure(rawText);
+
+  let detectedTopic = "सामान्य ज्ञान (GK)";
+
+  const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—|–|-|\d)/i);
+  if (topicHeaderMatch && topicHeaderMatch[1].trim()) {
+    const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+    if (foundTopic.length > 2) detectedTopic = foundTopic;
+  }
+
+  const rawBlocks = normalizedText.split(/(?=\n\s*(?:Q\d{1,4}|प्रश्न\s*\d+|\b\d{1,3}\b)[\.\:\-\)\s\[]+)/gi);
   const parsedMcqs: MCQ[] = [];
 
   rawBlocks.forEach((block, idx) => {
@@ -245,7 +246,6 @@ const formatDocumentStructure = (rawText: string): string => {
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"docTool" | "mcq">("docTool");
 
-  // MCQ Generator States
   const [mcqList, setMcqList] = useState<MCQ[]>([
     {
       id: 1,
@@ -270,12 +270,10 @@ export default function Home() {
   const [fontSize, setFontSize] = useState<"small" | "medium" | "large">("medium");
   const [layoutMode, setLayoutMode] = useState<"grid" | "vertical">("grid");
 
-  // Gemini API Voice States
   const [geminiApiKey, setGeminiApiKey] = useState("");
   const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
 
-  // Document Exact Extractor States
   const [extractedDocText, setExtractedDocText] = useState("");
   const [extractedFileName, setExtractedFileName] = useState("");
   const [isExtractingDoc, setIsExtractingDoc] = useState(false);
@@ -527,67 +525,79 @@ export default function Home() {
     reader.readAsArrayBuffer(file);
   };
 
+  // Helper: Robust PDF.js Text Parser with Fail-Safe Worker Setup
+  const extractPdfTextSafe = async (file: File): Promise<string> => {
+    const pdfjsLib = await import("pdfjs-dist/build/pdf");
+    
+    // Set fallback workers safely
+    if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version || "3.11.174"}/pdf.worker.min.js`;
+    }
+
+    const arrayBuffer = await file.arrayBuffer();
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+    const pdf = await loadingTask.promise;
+
+    let fullText = "";
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+
+      const items = (textContent.items as any[]).filter((it) => it.str !== undefined);
+
+      const lineBuckets: { y: number; items: any[] }[] = [];
+      for (const item of items) {
+        const itemY = item.transform ? Math.round(item.transform[5]) : 0;
+        let bucket = lineBuckets.find((b) => Math.abs(b.y - itemY) <= 4);
+        if (!bucket) {
+          bucket = { y: itemY, items: [] };
+          lineBuckets.push(bucket);
+        }
+        bucket.items.push(item);
+      }
+
+      lineBuckets.sort((a, b) => b.y - a.y);
+
+      let pageLines = [];
+      for (const bucket of lineBuckets) {
+        bucket.items.sort((a, b) => (a.transform ? a.transform[4] : 0) - (b.transform ? b.transform[4] : 0));
+
+        let lineStr = "";
+        let prevXEnd = null;
+
+        for (const item of bucket.items) {
+          const x = item.transform ? item.transform[4] : 0;
+          const width = item.width || (item.str ? item.str.length * 5 : 0);
+
+          if (prevXEnd !== null) {
+            const gap = x - prevXEnd;
+            if (gap > 3 && !lineStr.endsWith(" ") && !item.str.startsWith(" ")) {
+              lineStr += " ";
+            }
+          }
+
+          lineStr += item.str;
+          prevXEnd = x + width;
+        }
+
+        if (lineStr.trim()) {
+          pageLines.push(lineStr.trim());
+        }
+      }
+
+      fullText += `=== पृष्ठ ${i} ===\n` + pageLines.join("\n") + "\n\n";
+    }
+
+    return fullText;
+  };
+
   const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     try {
-      const pdfjsLib = await import("pdfjs-dist/build/pdf");
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-
-      const arrayBuffer = await file.arrayBuffer();
-      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-      const pdf = await loadingTask.promise;
-
-      let fullText = "";
-
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-
-        const items = (textContent.items as any[]).filter((it) => it.str !== undefined);
-
-        const lineBuckets: { y: number; items: any[] }[] = [];
-        for (const item of items) {
-          const itemY = item.transform ? Math.round(item.transform[5]) : 0;
-          let bucket = lineBuckets.find((b) => Math.abs(b.y - itemY) <= 4);
-          if (!bucket) {
-            bucket = { y: itemY, items: [] };
-            lineBuckets.push(bucket);
-          }
-          bucket.items.push(item);
-        }
-
-        lineBuckets.sort((a, b) => b.y - a.y);
-
-        let pageStr = "";
-        for (const bucket of lineBuckets) {
-          bucket.items.sort((a, b) => (a.transform ? a.transform[4] : 0) - (b.transform ? b.transform[4] : 0));
-
-          let lineText = "";
-          let prevXEnd = null;
-
-          for (const item of bucket.items) {
-            const x = item.transform ? item.transform[4] : 0;
-            const width = item.width || (item.str ? item.str.length * 5 : 0);
-
-            if (prevXEnd !== null) {
-              const gap = x - prevXEnd;
-              if (gap > 3 && !lineText.endsWith(" ") && !item.str.startsWith(" ")) {
-                lineText += " ";
-              }
-            }
-            lineText += item.str;
-            prevXEnd = x + width;
-          }
-
-          if (lineText.trim()) {
-            pageStr += lineText.trim() + "\n";
-          }
-        }
-
-        fullText += pageStr + "\n";
-      }
+      const fullText = await extractPdfTextSafe(file);
 
       if (!fullText.trim()) {
         alert("यह एक इमेज/स्कैन्ड PDF है।");
@@ -610,7 +620,7 @@ export default function Home() {
   };
 
   // -------------------------------------------------------------
-  // 📄 ACCURATE SPATIAL DOCUMENT EXTRACTOR
+  // 📄 ACCURATE SPATIAL DOCUMENT EXTRACTOR (WITH SAFE PDF WORKER)
   // -------------------------------------------------------------
   const handleExtractExactDocumentText = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -624,68 +634,7 @@ export default function Home() {
       const extension = file.name.split(".").pop()?.toLowerCase();
 
       if (extension === "pdf") {
-        const pdfjsLib = await import("pdfjs-dist/build/pdf");
-        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-
-        const arrayBuffer = await file.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-
-        let fullDocText = "";
-
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
-          const textContent = await page.getTextContent();
-
-          const items = (textContent.items as any[]).filter((it) => it.str !== undefined);
-
-          // Group items by vertical Y coordinate
-          const lineBuckets: { y: number; items: any[] }[] = [];
-          for (const item of items) {
-            const itemY = item.transform ? Math.round(item.transform[5]) : 0;
-            let bucket = lineBuckets.find((b) => Math.abs(b.y - itemY) <= 4);
-            if (!bucket) {
-              bucket = { y: itemY, items: [] };
-              lineBuckets.push(bucket);
-            }
-            bucket.items.push(item);
-          }
-
-          // Sort lines Top -> Bottom (Y decreases downwards)
-          lineBuckets.sort((a, b) => b.y - a.y);
-
-          let pageLines = [];
-          for (const bucket of lineBuckets) {
-            // Sort items in line Left -> Right (X coordinate)
-            bucket.items.sort((a, b) => (a.transform ? a.transform[4] : 0) - (b.transform ? b.transform[4] : 0));
-
-            let lineStr = "";
-            let prevXEnd = null;
-
-            for (const item of bucket.items) {
-              const x = item.transform ? item.transform[4] : 0;
-              const width = item.width || (item.str ? item.str.length * 5 : 0);
-
-              if (prevXEnd !== null) {
-                const gap = x - prevXEnd;
-                // Add space if there is a gap between adjacent text chunks on the line
-                if (gap > 3 && !lineStr.endsWith(" ") && !item.str.startsWith(" ")) {
-                  lineStr += " ";
-                }
-              }
-
-              lineStr += item.str;
-              prevXEnd = x + width;
-            }
-
-            if (lineStr.trim()) {
-              pageLines.push(lineStr.trim());
-            }
-          }
-
-          fullDocText += `=== पृष्ठ ${i} ===\n` + pageLines.join("\n") + "\n\n";
-        }
-
-        rawExtractedText = fullDocText;
+        rawExtractedText = await extractPdfTextSafe(file);
       } else if (extension === "docx") {
         const arrayBuffer = await file.arrayBuffer();
         const result = await mammoth.extractRawText({ arrayBuffer });
@@ -707,7 +656,7 @@ export default function Home() {
       }
     } catch (err) {
       console.error("Document Extraction Error:", err);
-      alert("दस्तावेज़ से टेक्स्ट निकालने में समस्या आई!");
+      alert("दस्तावेज़ से टेक्स्ट निकालने में समस्या आई! कृपया फ़ाइल की जाँच करें।");
     } finally {
       setIsExtractingDoc(false);
     }
@@ -971,7 +920,6 @@ export default function Home() {
         w: 8.0,
         h: 0.5,
         fontSize: currentFontSizes.title,
-        fontFace: PPT_FONT,
         color: theme.titleColor,
         bold: true,
       });
