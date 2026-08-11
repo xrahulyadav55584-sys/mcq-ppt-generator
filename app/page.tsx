@@ -237,7 +237,7 @@ const loadTesseract = (): Promise<any> => {
       const script2 = document.createElement("script");
       script2.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
       script2.onload = () => resolve((window as any).Tesseract);
-      script2.onerror = () => reject(new Error("OCR लाइब्रेरी लोड नहीं हो सकी। कृपया अपना इंटरनेट कनेक्शन जाँचें।"));
+      script2.onerror = () => reject(new Error("OCR लाइब्रेरी लोड नहीं हो सकी। कृपया इंटरनेट कनेक्शन जाँचें।"));
       document.head.appendChild(script2);
     };
     document.head.appendChild(script);
@@ -260,37 +260,26 @@ const runOcrOnImageSource = async (
   return result.data.text || "";
 };
 
-// 🛠️ SETUP PDF.JS WORKER VIA SAME-ORIGIN BLOB TO PREVENT CORS SECURITY BLOCK
-const setupPdfWorkerBlob = async (pdfjsLib: any) => {
-  if (typeof window === "undefined") return;
-  if ((window as any)._pdfWorkerBlobUrlReady) return;
-
-  const version = pdfjsLib.version || "3.11.174";
-  const cdnWorkerUrl = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.js`;
-
-  try {
-    const res = await fetch(cdnWorkerUrl);
-    const workerScript = await res.text();
-    const blob = new Blob([workerScript], { type: "text/javascript" });
-    const blobUrl = URL.createObjectURL(blob);
-    pdfjsLib.GlobalWorkerOptions.workerSrc = blobUrl;
-    (window as any)._pdfWorkerBlobUrlReady = true;
-  } catch (err) {
-    console.warn("Blob Worker setup fallback:", err);
-    pdfjsLib.GlobalWorkerOptions.workerSrc = cdnWorkerUrl;
-  }
-};
-
 const extractPdfTextSafe = async (
   file: File,
   onStatusUpdate?: (msg: string) => void
 ): Promise<string> => {
+  let pdfjsLib: any;
   try {
-    const pdfModule = await import("pdfjs-dist/build/pdf");
-    const pdfjsLib = pdfModule.default || pdfModule;
+    const pdfModule = await import("pdfjs-dist");
+    pdfjsLib = pdfModule.default || pdfModule;
+    const version = pdfjsLib.version || "4.4.168";
 
-    await setupPdfWorkerBlob(pdfjsLib);
+    if (typeof window !== "undefined") {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
+    }
+  } catch (err: any) {
+    console.error("PDF.js Module Error:", err);
+    throw new Error("PDF.js इंजन लोड नहीं हो सका: " + (err?.message || ""));
+  }
 
+  try {
+    if (onStatusUpdate) onStatusUpdate("⏳ PDF फ़ाइल खोली जा रही है...");
     const arrayBuffer = await file.arrayBuffer();
     const loadingTask = pdfjsLib.getDocument({
       data: arrayBuffer,
@@ -302,7 +291,7 @@ const extractPdfTextSafe = async (
     let fullText = "";
 
     for (let i = 1; i <= pdf.numPages; i++) {
-      if (onStatusUpdate) onStatusUpdate(`📄 पृष्ठ ${i}/${pdf.numPages} पढ़ा जा रहा है...`);
+      if (onStatusUpdate) onStatusUpdate(`📄 पृष्ठ ${i}/${pdf.numPages} का टेक्स्ट निकाला जा रहा है...`);
       const page = await pdf.getPage(i);
       const textContent = await page.getTextContent();
 
@@ -349,14 +338,13 @@ const extractPdfTextSafe = async (
       }
 
       const pageResult = pageLines.join("\n").trim();
-      if (pageResult.length > 5) {
+      if (pageResult.length > 0) {
         fullText += `=== पृष्ठ ${i} ===\n` + pageResult + "\n\n";
       }
     }
 
-    // 📸 SCANNED PDF DETECTOR & CANVAS OCR FALLBACK
-    if (fullText.replace(/=== पृष्ठ \d+ ===/g, "").trim().length < 15) {
-      if (onStatusUpdate) onStatusUpdate("📷 स्कैन्ड PDF की पहचान हुई, OCR चालू हो रहा है...");
+    if (fullText.replace(/=== पृष्ठ \d+ ===/g, "").trim().length < 10) {
+      if (onStatusUpdate) onStatusUpdate("📷 स्कैन्ड/इमेज PDF की पहचान हुई! OCR चालू हो रहा है...");
       let scannedPdfText = "";
 
       for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
@@ -382,14 +370,9 @@ const extractPdfTextSafe = async (
     }
 
     return fullText;
-  } catch (firstErr) {
-    console.warn("Primary PDF extraction failed, attempting OCR fallback...", firstErr);
-    try {
-      return await runOcrOnImageSource(file, onStatusUpdate);
-    } catch (secondErr: any) {
-      console.error("Secondary Image OCR Failed:", secondErr);
-      throw new Error("फ़ाइल से टेक्स्ट नहीं पढ़ा जा सका। कृपया जाँचें कि फ़ाइल सही है या नहीं।");
-    }
+  } catch (err: any) {
+    console.error("PDF Parsing Error:", err);
+    throw new Error("PDF पढ़ने में त्रुटि: " + (err?.message || "फ़ाइल पासवर्ड-सुरक्षित या डैमेज हो सकती है।"));
   }
 };
 
