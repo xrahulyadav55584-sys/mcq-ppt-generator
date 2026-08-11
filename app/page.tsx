@@ -122,7 +122,26 @@ const formatDocumentStructure = (rawText: string): string => {
   s = s.replace(/([^\n])\s*(\([A-Da-d]\))/g, "$1\n$2");
   s = s.replace(/([^\n])\s*\b([A-D])[\.\)]\s+(?=[^\n])/g, "$1\n($2) ");
   s = s.replace(/([^\n])\s*(Your Answer:|Correct Answer:|Correct|Incorrect|Answer:|Ans:|उत्तर:|सही उत्तर:|व्याख्या:|Explanation:)/gi, "$1\n$2");
-  s = s.replace(/\n\s*\(\s*\n/g, "\n");   s = s.replace(/\n{3,}/g, "\n\n");    return s.trim(); };  const parseRawTextToMCQs = (rawText: string): MCQ[] => {   if (!rawText \vert{}\vert{} !rawText.trim()) return [];    const normalizedText = formatDocumentStructure(rawText);    let detectedTopic = "सामान्य ज्ञान (GK)";    const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—\vert{}–\vert{}-\vert{}\d)/i);   if (topicHeaderMatch && topicHeaderMatch[1].trim()) {     const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();     if (foundTopic.length > 2) detectedTopic = foundTopic;   }    const rawBlocks = normalizedText.split(/(?=\n\s*(?:Q\d{1,4}\vert{}प्रश्न\s*\d+\vert{}\b\d{1,3}\b)[\.\:\-\)\s\[]+)/gi);
+  s = s.replace(/\n\s*\(\s*\n/g, "\n");
+  s = s.replace(/\n{3,}/g, "\n\n");
+
+  return s.trim();
+};
+
+const parseRawTextToMCQs = (rawText: string): MCQ[] => {
+  if (!rawText || !rawText.trim()) return [];
+
+  const normalizedText = formatDocumentStructure(rawText);
+
+  let detectedTopic = "सामान्य ज्ञान (GK)";
+
+  const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—|–|-|\d)/i);
+  if (topicHeaderMatch && topicHeaderMatch[1].trim()) {
+    const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+    if (foundTopic.length > 2) detectedTopic = foundTopic;
+  }
+
+  const rawBlocks = normalizedText.split(/(?=\n\s*(?:Q\d{1,4}|प्रश्न\s*\d+|\b\d{1,3}\b)[\.\:\-\)\s\[]+)/gi);
   const parsedMcqs: MCQ[] = [];
 
   rawBlocks.forEach((block, idx) => {
@@ -222,23 +241,20 @@ const formatDocumentStructure = (rawText: string): string => {
 };
 
 // -------------------------------------------------------------
-// 3. ROBUST & SAFE PDF PARSER (WEBPACK UNWRAPPED)
+// 3. FAIL-SAFE PDF PARSER (DIRECT IN-MEMORY ENGINE)
 // -------------------------------------------------------------
 const extractPdfTextSafe = async (file: File): Promise<string> => {
   try {
-    const pdfModule = await import("pdfjs-dist");
-    const pdfjsLib = pdfModule.default || pdfModule;
-
-    if (typeof window !== "undefined") {
-      const version = pdfjsLib.version || "4.4.168";
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
-    }
+    const pdfjsLib = await import("pdfjs-dist/build/pdf");
+    
+    // Disable external worker completely to prevent CDN network block/CORS issues
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version || "3.11.174"}/build/pdf.worker.min.js`;
 
     const arrayBuffer = await file.arrayBuffer();
     const loadingTask = pdfjsLib.getDocument({
       data: arrayBuffer,
       useSystemFonts: true,
-      isEvalSupported: false,
+      disableFontFace: true,
     });
 
     const pdf = await loadingTask.promise;
@@ -294,9 +310,28 @@ const extractPdfTextSafe = async (file: File): Promise<string> => {
     }
 
     return fullText;
-  } catch (error: any) {
-    console.error("PDF Extraction Internal Error:", error);
-    throw new Error(error?.message || "PDF पढ़ने में त्रुटि हुई।");
+  } catch (firstErr) {
+    console.warn("Primary PDF worker failed, executing fallback reader...", firstErr);
+
+    // Secondary Direct Fallback Reader
+    try {
+      const pdfjsLib = await import("pdfjs-dist/build/pdf");
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let textOutput = "";
+
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const page = await pdf.getPage(pageNum);
+        const content = await page.getTextContent();
+        const strings = content.items.map((item: any) => item.str || "");
+        textOutput += `=== पृष्ठ ${pageNum} ===\n` + strings.join(" ") + "\n\n";
+      }
+
+      return textOutput;
+    } catch (secondErr: any) {
+      console.error("Secondary PDF Reader Failed:", secondErr);
+      throw new Error("PDF फ़ाइल पढ़ी नहीं जा सकी। कृपया जाँचें कि फ़ाइल पासवर्ड-सुरक्षित या इमेज स्कैन्ड तो नहीं है।");
+    }
   }
 };
 
@@ -885,7 +920,6 @@ export default function Home() {
             w: 7.8,
             h: 0.6,
             fontSize: currentFontSizes.option,
-            bold: true,
             fontFace: PPT_FONT,
             color: theme.textColor,
             valign: "middle",
