@@ -122,7 +122,26 @@ const formatDocumentStructure = (rawText: string): string => {
   s = s.replace(/([^\n])\s*(\([A-Da-d]\))/g, "$1\n$2");
   s = s.replace(/([^\n])\s*\b([A-D])[\.\)]\s+(?=[^\n])/g, "$1\n($2) ");
   s = s.replace(/([^\n])\s*(Your Answer:|Correct Answer:|Correct|Incorrect|Answer:|Ans:|उत्तर:|सही उत्तर:|व्याख्या:|Explanation:)/gi, "$1\n$2");
-  s = s.replace(/\n\s*\(\s*\n/g, "\n");   s = s.replace(/\n{3,}/g, "\n\n");    return s.trim(); };  const parseRawTextToMCQs = (rawText: string): MCQ[] => {   if (!rawText \vert{}\vert{} !rawText.trim()) return [];    const normalizedText = formatDocumentStructure(rawText);    let detectedTopic = "सामान्य ज्ञान (GK)";    const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—\vert{}–\vert{}-\vert{}\d)/i);   if (topicHeaderMatch && topicHeaderMatch[1].trim()) {     const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();     if (foundTopic.length > 2) detectedTopic = foundTopic;   }    const rawBlocks = normalizedText.split(/(?=\n\s*(?:Q\d{1,4}\vert{}प्रश्न\s*\d+\vert{}\b\d{1,3}\b)[\.\:\-\)\s\[]+)/gi);
+  s = s.replace(/\n\s*\(\s*\n/g, "\n");
+  s = s.replace(/\n{3,}/g, "\n\n");
+
+  return s.trim();
+};
+
+const parseRawTextToMCQs = (rawText: string): MCQ[] => {
+  if (!rawText || !rawText.trim()) return [];
+
+  const normalizedText = formatDocumentStructure(rawText);
+
+  let detectedTopic = "सामान्य ज्ञान (GK)";
+
+  const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—|–|-|\d)/i);
+  if (topicHeaderMatch && topicHeaderMatch[1].trim()) {
+    const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+    if (foundTopic.length > 2) detectedTopic = foundTopic;
+  }
+
+  const rawBlocks = normalizedText.split(/(?=\n\s*(?:Q\d{1,4}|प्रश्न\s*\d+|\b\d{1,3}\b)[\.\:\-\)\s\[]+)/gi);
   const parsedMcqs: MCQ[] = [];
 
   rawBlocks.forEach((block, idx) => {
