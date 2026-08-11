@@ -122,26 +122,7 @@ const formatDocumentStructure = (rawText: string): string => {
   s = s.replace(/([^\n])\s*(\([A-Da-d]\))/g, "$1\n$2");
   s = s.replace(/([^\n])\s*\b([A-D])[\.\)]\s+(?=[^\n])/g, "$1\n($2) ");
   s = s.replace(/([^\n])\s*(Your Answer:|Correct Answer:|Correct|Incorrect|Answer:|Ans:|उत्तर:|सही उत्तर:|व्याख्या:|Explanation:)/gi, "$1\n$2");
-  s = s.replace(/\n\s*\(\s*\n/g, "\n");
-  s = s.replace(/\n{3,}/g, "\n\n");
-
-  return s.trim();
-};
-
-const parseRawTextToMCQs = (rawText: string): MCQ[] => {
-  if (!rawText || !rawText.trim()) return [];
-
-  const normalizedText = formatDocumentStructure(rawText);
-
-  let detectedTopic = "सामान्य ज्ञान (GK)";
-
-  const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—|–|-|\d)/i);
-  if (topicHeaderMatch && topicHeaderMatch[1].trim()) {
-    const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
-    if (foundTopic.length > 2) detectedTopic = foundTopic;
-  }
-
-  const rawBlocks = normalizedText.split(/(?=\n\s*(?:Q\d{1,4}|प्रश्न\s*\d+|\b\d{1,3}\b)[\.\:\-\)\s\[]+)/gi);
+  s = s.replace(/\n\s*\(\s*\n/g, "\n");   s = s.replace(/\n{3,}/g, "\n\n");    return s.trim(); };  const parseRawTextToMCQs = (rawText: string): MCQ[] => {   if (!rawText \vert{}\vert{} !rawText.trim()) return [];    const normalizedText = formatDocumentStructure(rawText);    let detectedTopic = "सामान्य ज्ञान (GK)";    const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—\vert{}–\vert{}-\vert{}\d)/i);   if (topicHeaderMatch && topicHeaderMatch[1].trim()) {     const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();     if (foundTopic.length > 2) detectedTopic = foundTopic;   }    const rawBlocks = normalizedText.split(/(?=\n\s*(?:Q\d{1,4}\vert{}प्रश्न\s*\d+\vert{}\b\d{1,3}\b)[\.\:\-\)\s\[]+)/gi);
   const parsedMcqs: MCQ[] = [];
 
   rawBlocks.forEach((block, idx) => {
@@ -241,7 +222,86 @@ const parseRawTextToMCQs = (rawText: string): MCQ[] => {
 };
 
 // -------------------------------------------------------------
-// 3. MAIN REACT COMPONENT
+// 3. ROBUST & SAFE PDF PARSER (WEBPACK UNWRAPPED)
+// -------------------------------------------------------------
+const extractPdfTextSafe = async (file: File): Promise<string> => {
+  try {
+    const pdfModule = await import("pdfjs-dist");
+    const pdfjsLib = pdfModule.default || pdfModule;
+
+    if (typeof window !== "undefined") {
+      const version = pdfjsLib.version || "4.4.168";
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
+    }
+
+    const arrayBuffer = await file.arrayBuffer();
+    const loadingTask = pdfjsLib.getDocument({
+      data: arrayBuffer,
+      useSystemFonts: true,
+      isEvalSupported: false,
+    });
+
+    const pdf = await loadingTask.promise;
+    let fullText = "";
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+
+      const items = (textContent.items as any[]).filter((it) => it && typeof it.str === "string");
+
+      const lineBuckets: { y: number; items: any[] }[] = [];
+      for (const item of items) {
+        const itemY = item.transform ? Math.round(item.transform[5]) : 0;
+        let bucket = lineBuckets.find((b) => Math.abs(b.y - itemY) <= 4);
+        if (!bucket) {
+          bucket = { y: itemY, items: [] };
+          lineBuckets.push(bucket);
+        }
+        bucket.items.push(item);
+      }
+
+      lineBuckets.sort((a, b) => b.y - a.y);
+
+      let pageLines: string[] = [];
+      for (const bucket of lineBuckets) {
+        bucket.items.sort((a, b) => (a.transform ? a.transform[4] : 0) - (b.transform ? b.transform[4] : 0));
+
+        let lineStr = "";
+        let prevXEnd: number | null = null;
+
+        for (const item of bucket.items) {
+          const x = item.transform ? item.transform[4] : 0;
+          const width = item.width || (item.str ? item.str.length * 5 : 0);
+
+          if (prevXEnd !== null) {
+            const gap = x - prevXEnd;
+            if (gap > 3 && !lineStr.endsWith(" ") && !item.str.startsWith(" ")) {
+              lineStr += " ";
+            }
+          }
+
+          lineStr += item.str;
+          prevXEnd = x + width;
+        }
+
+        if (lineStr.trim()) {
+          pageLines.push(lineStr.trim());
+        }
+      }
+
+      fullText += `=== पृष्ठ ${i} ===\n` + pageLines.join("\n") + "\n\n";
+    }
+
+    return fullText;
+  } catch (error: any) {
+    console.error("PDF Extraction Internal Error:", error);
+    throw new Error(error?.message || "PDF पढ़ने में त्रुटि हुई।");
+  }
+};
+
+// -------------------------------------------------------------
+// 4. MAIN REACT COMPONENT
 // -------------------------------------------------------------
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"docTool" | "mcq">("docTool");
@@ -525,73 +585,6 @@ export default function Home() {
     reader.readAsArrayBuffer(file);
   };
 
-  // Helper: Robust PDF.js Text Parser with Fail-Safe Worker Setup
-  const extractPdfTextSafe = async (file: File): Promise<string> => {
-    const pdfjsLib = await import("pdfjs-dist/build/pdf");
-    
-    // Set fallback workers safely
-    if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version || "3.11.174"}/pdf.worker.min.js`;
-    }
-
-    const arrayBuffer = await file.arrayBuffer();
-    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-    const pdf = await loadingTask.promise;
-
-    let fullText = "";
-
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-
-      const items = (textContent.items as any[]).filter((it) => it.str !== undefined);
-
-      const lineBuckets: { y: number; items: any[] }[] = [];
-      for (const item of items) {
-        const itemY = item.transform ? Math.round(item.transform[5]) : 0;
-        let bucket = lineBuckets.find((b) => Math.abs(b.y - itemY) <= 4);
-        if (!bucket) {
-          bucket = { y: itemY, items: [] };
-          lineBuckets.push(bucket);
-        }
-        bucket.items.push(item);
-      }
-
-      lineBuckets.sort((a, b) => b.y - a.y);
-
-      let pageLines = [];
-      for (const bucket of lineBuckets) {
-        bucket.items.sort((a, b) => (a.transform ? a.transform[4] : 0) - (b.transform ? b.transform[4] : 0));
-
-        let lineStr = "";
-        let prevXEnd = null;
-
-        for (const item of bucket.items) {
-          const x = item.transform ? item.transform[4] : 0;
-          const width = item.width || (item.str ? item.str.length * 5 : 0);
-
-          if (prevXEnd !== null) {
-            const gap = x - prevXEnd;
-            if (gap > 3 && !lineStr.endsWith(" ") && !item.str.startsWith(" ")) {
-              lineStr += " ";
-            }
-          }
-
-          lineStr += item.str;
-          prevXEnd = x + width;
-        }
-
-        if (lineStr.trim()) {
-          pageLines.push(lineStr.trim());
-        }
-      }
-
-      fullText += `=== पृष्ठ ${i} ===\n` + pageLines.join("\n") + "\n\n";
-    }
-
-    return fullText;
-  };
-
   const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -613,14 +606,14 @@ export default function Home() {
       } else {
         alert("PDF फ़ाइल से प्रश्न पढ़ने में समस्या आई।");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("PDF Parsing Error:", err);
-      alert("PDF फ़ाइल प्रोसेस करने में समस्या आई!");
+      alert(`PDF फ़ाइल प्रोसेस करने में समस्या आई: ${err?.message || "अज्ञात त्रुटि"}`);
     }
   };
 
   // -------------------------------------------------------------
-  // 📄 ACCURATE SPATIAL DOCUMENT EXTRACTOR (WITH SAFE PDF WORKER)
+  // 📄 ACCURATE SPATIAL DOCUMENT EXTRACTOR
   // -------------------------------------------------------------
   const handleExtractExactDocumentText = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -654,9 +647,9 @@ export default function Home() {
       } else {
         alert("फ़ाइल में से टेक्स्ट नहीं पढ़ा जा सका। फ़ाइल खाली या स्कैन्ड इमेज हो सकती है।");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Document Extraction Error:", err);
-      alert("दस्तावेज़ से टेक्स्ट निकालने में समस्या आई! कृपया फ़ाइल की जाँच करें।");
+      alert(`दस्तावेज़ से टेक्स्ट निकालने में समस्या आई! (${err?.message || "कृपया फ़ाइल की जाँच करें।"})`);
     } finally {
       setIsExtractingDoc(false);
     }
