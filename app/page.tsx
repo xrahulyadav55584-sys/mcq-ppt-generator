@@ -93,7 +93,7 @@ const fontSizes = {
 };
 
 // -------------------------------------------------------------
-// 2. HELPER & CLEANING FUNCTIONS
+// 2. ADVANCED HINDI REPAIR & STRUCTURAL CLEANER
 // -------------------------------------------------------------
 const cleanText = (text: string) => {
   if (!text) return "";
@@ -103,25 +103,61 @@ const cleanText = (text: string) => {
     .trim();
 };
 
-const fixMisplacedMatras = (text: string): string => {
+/**
+ * 🛠️ ENHANCED DEVANAGARI GLYPH REPAIR
+ * Re-attaches broken Unicode characters specific to PDF Test Engine exports.
+ */
+const fixDevanagariPdfGlyphs = (text: string): string => {
   if (!text) return "";
-  return text.replace(/\u093F([\u0904-\u0939\u0958-\u095F])/g, "$1\u093F");
+
+  let s = text;
+
+  // Fix common broken strings from test PDF engines
+  s = s
+    .replace(/\bफिटर\s+ोरी\b/g, "फिटर थ्योरी")
+    .replace(/निमाण\s+म/g, "निर्माण में")
+    .replace(/पदाथ\b/g, "पदार्थ")
+    .replace(/परिष्करण\s+काय\b/g, "परिष्करण कार्य")
+    .replace(/अपघषक/g, "अपघर्षक");
+
+  // Re-attach detached pre-base Matra (ि)
+  s = s.replace(/\u093F\s*([\u0904-\u0939\u0958-\u095F])/g, "$1\u093F");
+
+  // Merge split half-consonants & matras
+  s = s.replace(/([\u0900-\u097F])\s+([\u093A-\u094D])/g, "$1$2");
+
+  return s;
 };
 
+/**
+ * 📐 EXACT STRUCTURAL LAYOUT FORMATTER
+ */
 const formatDocumentStructure = (rawText: string): string => {
   if (!rawText) return "";
 
-  let s = fixMisplacedMatras(rawText);
+  let s = fixDevanagariPdfGlyphs(rawText);
 
+  // Normalize spaces
   s = s
     .split("\n")
     .map((line) => line.replace(/[ \t]+/g, " ").trim())
     .join("\n");
 
+  // Format Questions (Q1 [, Q1., Question 1, प्रश्न 1)
   s = s.replace(/(?<!\n)\s*(Q\d{1,4}\b|Question\s*\d+|प्रश्न\s*\d+)/gi, "\n\n$1");
+
+  // Merge split Answer status lines (e.g. Your Answer:\n (D) - \n Correct -> Your Answer: (D) - Correct)
+  s = s.replace(/Your\s*Answer:\s*\n\s*(\([A-D]\)\s*-?)\s*\n\s*(Correct|Incorrect)/gi, "Your Answer: $1 $2");
+  s = s.replace(/Correct\s*Answer:\s*\n\s*(\([A-D]\).*)/gi, "Correct Answer: $1");
+
+  // Place Options (A), (B), (C), (D) on clean individual lines
   s = s.replace(/([^\n])\s*(\([A-Da-d]\))/g, "$1\n$2");
   s = s.replace(/([^\n])\s*\b([A-D])[\.\)]\s+(?=[^\n])/g, "$1\n($2) ");
-  s = s.replace(/([^\n])\s*(Your Answer:|Correct Answer:|Correct|Incorrect|Answer:|Ans:|उत्तर:|सही उत्तर:|व्याख्या:|Explanation:)/gi, "$1\n$2");
+
+  // Line breaks before Answer Headers
+  s = s.replace(/([^\n])\s*(Your Answer:|Correct Answer:|उत्तर:|सही उत्तर:|व्याख्या:|Explanation:)/gi, "$1\n$2");
+
+  // Remove orphan brackets or empty lines
   s = s.replace(/\n\s*\(\s*\n/g, "\n");
   s = s.replace(/\n{3,}/g, "\n\n");
 
@@ -241,7 +277,7 @@ const parseRawTextToMCQs = (rawText: string): MCQ[] => {
 };
 
 // -------------------------------------------------------------
-// 3. OCR & IMAGE EXTRACTION ENGINE (HINDI + ENGLISH)
+// 3. OCR & IMAGE EXTRACTION ENGINE
 // -------------------------------------------------------------
 const loadTesseract = (): Promise<any> => {
   return new Promise((resolve, reject) => {
