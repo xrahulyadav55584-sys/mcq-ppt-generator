@@ -1,10 +1,13 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import pptxgen from "pptxgenjs";
 import * as XLSX from "xlsx";
 import mammoth from "mammoth";
 
+// -------------------------------------------------------------
+// 1. TYPES & CONFIGURATIONS
+// -------------------------------------------------------------
 interface MCQ {
   id: number;
   topic: string;
@@ -74,6 +77,24 @@ const DESIGN_THEMES = {
   },
 };
 
+const AVAILABLE_FONTS = [
+  { id: "Nirmala UI", name: "✨ Nirmala UI (हिंदी एवं इंग्लिश - अनुशंसित)" },
+  { id: "Segoe UI", name: "🔹 Segoe UI (मॉडर्न एवं साफ़)" },
+  { id: "Trebuchet MS", name: "🔸 Trebuchet MS (बोल्ड एवं स्टाइल)" },
+  { id: "Arial", name: "📄 Arial (क्लासिक सिंपल)" },
+  { id: "Century Gothic", name: "💎 Century Gothic (प्रीमियम मिनिमल)" },
+  { id: "Georgia", name: "📖 Georgia (एलिगेंट सेरिफ़)" },
+];
+
+const fontSizes = {
+  small: { question: 15, option: 14, title: 12 },
+  medium: { question: 18, option: 16, title: 13 },
+  large: { question: 22, option: 18, title: 14 },
+};
+
+// -------------------------------------------------------------
+// 2. HELPER, HINDI GLYPH REPAIR & STRUCTURAL FORMATTER
+// -------------------------------------------------------------
 const cleanText = (text: string) => {
   if (!text) return "";
   return text
@@ -82,8 +103,193 @@ const cleanText = (text: string) => {
     .trim();
 };
 
+/**
+ * 🛠️ ADVANCED DEVANAGARI / HINDI PDF GLYPH & MATRA REPAIR ENGINE
+ * Fixes split Unicode characters, misplaced pre-base matras (ि), and artificial letter spacing.
+ */
+const fixHindiDevanagariPdfText = (text: string): string => {
+  if (!text) return "";
+
+  let s = text;
+
+  // 1. Move detached pre-base Matra (ि / \u093F) to after consonant if misplaced
+  // e.g., "ि फ" -> "फि", "ि न" -> "नि", "ि द" -> "दि"
+  s = s.replace(/\u093F\s*([\u0904-\u0939\u0958-\u095F])/g, "$1\u093F");
+
+  // 2. Merge split consonants with dependent matras/halant
+  // e.g. "क ो" -> "को", "ब ो" -> "बो", "म ् ब" -> "म्ब"
+  s = s.replace(/([\u0900-\u097F])\s+([\u093A-\u094D\u0901-\u0903\u0951-\u0954])/g, "$1$2");
+
+  // 3. Remove artificial spaces between consecutive single Devanagari characters
+  // e.g., "अ से म् ब ली" -> "असेम्बली", "स ू च ी" -> "सूची"
+  s = s.replace(/(?<=[\u0900-\u097F])\s+(?=[\u0900-\u097F])/g, (match, offset, str) => {
+    // Check surrounding word context: merge if part of a split Devanagari word
+    const prevChar = str[offset - 1];
+    const nextChar = str[offset + 1];
+    if (prevChar && nextChar && prevChar.match(/[\u0900-\u097F]/) && nextChar.match(/[\u0900-\u097F]/)) {
+      return "";
+    }
+    return match;
+  });
+
+  // 4. Repeated pass for deep nested matra combinations (e.g., "ि फ ट र   ो री" -> "फिटर थ्योरी")
+  s = s
+    .replace(/([\u0900-\u097F])\s+([\u093A-\u094D])/g, "$1$2")
+    .replace(/\u093F\s*([\u0904-\u0939])/g, "$1\u093F")
+    .replace(/  +/g, " ");
+
+  return s;
+};
+
+/**
+ * 📐 FORMAT DOCUMENT LAYOUT (PRESERVE PDF QUESTIONS & OPTIONS ON NEW LINES)
+ */
+const formatDocumentStructure = (rawText: string): string => {
+  if (!rawText) return "";
+
+  let cleaned = fixHindiDevanagariPdfText(rawText);
+
+  // Line breaks before Question Markers (Q1, Q2, Q1 [, Q.1, Question 1, प्रश्न 1)
+  cleaned = cleaned.replace(/(?<!\n)\s*(Q\d{1,4}\s*\[|Q\d{1,4}\b|Q\.\d+|Question\s*\d+|प्रश्न\s*\d+)/gi, "\n\n$1");
+
+  // Line breaks before Option Letters: (A), (B), (C), (D)
+  cleaned = cleaned.replace(/(?<!\n)\s*(\([A-Da-d]\))/g, "\n$1");
+
+  // Line breaks before Options formatted as A., B., C., D.
+  cleaned = cleaned.replace(/(?<!\n)\s*\b([A-D])[\.\)]\s+(?=[^\n])/g, "\n($1) ");
+
+  // Line breaks before Test Answers & Statuses
+  cleaned = cleaned.replace(/(?<!\n)\s*(Your Answer:|Correct Answer:|Correct|Incorrect|Answer:|Ans:|उत्तर:|सही उत्तर:|व्याख्या:|Explanation:)/gi, "\n$1");
+
+  // Line breaks before Summary Header Items
+  cleaned = cleaned.replace(/(?<!\n)\s*(Test Submitted Successfully!|Here is your performance analysis\.|Total Questions|Attempted|Correct|Incorrect|Accuracy|Total Score|Detailed Review)/gi, "\n$1");
+
+  // Page Dividers
+  cleaned = cleaned.replace(/\s*(===\s*पृष्ठ\s*\d+\s*===|---\s*Page\s*\d+\s*---)\s*/gi, "\n\n$1\n\n");
+
+  // Clean excessive blank lines
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
+
+  return cleaned.trim();
+};
+
+const parseRawTextToMCQs = (rawText: string): MCQ[] => {
+  if (!rawText || !rawText.trim()) return [];
+
+  const normalizedText = formatDocumentStructure(rawText);
+
+  let detectedTopic = "सामान्य ज्ञान (GK)";
+
+  const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—|–|-|\d)/i);
+  if (topicHeaderMatch && topicHeaderMatch[1].trim()) {
+    const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+    if (foundTopic.length > 2) detectedTopic = foundTopic;
+  }
+
+  const rawBlocks = normalizedText.split(/(?=\n\s*(?:Q\d{1,4}|प्रश्न\s*\d+|\b\d{1,3}\b)[\.\:\-\)\s\[]+)/gi);
+  const parsedMcqs: MCQ[] = [];
+
+  rawBlocks.forEach((block, idx) => {
+    const trimmedBlock = block.trim();
+    if (!trimmedBlock) return;
+
+    const lines = trimmedBlock
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
+    if (lines.length === 0) return;
+
+    let qText = "";
+    let optA = "", optB = "", optC = "", optD = "";
+    let ansLetter = "";
+    let rawAnsLine = "";
+
+    for (const line of lines) {
+      const cleanL = line.replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+      if (/^(?:Q\d{1,4}|प्रश्न\s*\d+|\b\d{1,3}\b)[\.\:\-\)\s\[]+/i.test(cleanL)) {
+        qText = cleanL.replace(/^(?:Q\d{1,4}|प्रश्न\s*\d+|\b\d{1,3}\b)[\.\:\-\)\s\[]+\s*/i, "").trim();
+        break;
+      }
+    }
+
+    if (!qText && lines[0] && !/^[A-D][\.\:\-\)\s]+/i.test(lines[0])) {
+      qText = lines[0].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+    }
+
+    lines.forEach((line) => {
+      const cleanL = line.replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
+
+      if (/^\(A\)|\bA[\.\:\-\)\s]+/i.test(cleanL)) {
+        optA = cleanL.replace(/^\(A\)|\bA[\.\:\-\)\s]+\s*/i, "").trim();
+      } else if (/^\(B\)|\bB[\.\:\-\)\s]+/i.test(cleanL)) {
+        optB = cleanL.replace(/^\(B\)|\bB[\.\:\-\)\s]+\s*/i, "").trim();
+      } else if (/^\(C\)|\bC[\.\:\-\)\s]+/i.test(cleanL)) {
+        optC = cleanL.replace(/^\(C\)|\bC[\.\:\-\)\s]+\s*/i, "").trim();
+      } else if (/^\(D\)|\bD[\.\:\-\)\s]+/i.test(cleanL)) {
+        optD = cleanL.replace(/^\(D\)|\bD[\.\:\-\)\s]+\s*/i, "").trim();
+      } else if (
+        cleanL.includes("Your Answer:") ||
+        cleanL.includes("Correct Answer:") ||
+        cleanL.includes("उत्तर") ||
+        cleanL.toLowerCase().includes("answer")
+      ) {
+        rawAnsLine = cleanL;
+        const letterMatch = cleanL.match(/(?:Your Answer:|Correct Answer:|उत्तर|Answer|Ans)[\:\-\s]*\(?([A-D])\)?/i);
+        if (letterMatch) {
+          ansLetter = letterMatch[1].toUpperCase();
+        }
+      }
+    });
+
+    const options = [optA.trim(), optB.trim(), optC.trim(), optD.trim()];
+
+    let finalAns = options[0] || "";
+    if (ansLetter === "A") finalAns = options[0];
+    else if (ansLetter === "B") finalAns = options[1];
+    else if (ansLetter === "C") finalAns = options[2];
+    else if (ansLetter === "D") finalAns = options[3];
+    else if (rawAnsLine) {
+      const matched = options.find((o) => o && rawAnsLine.includes(o));
+      if (matched) finalAns = matched;
+    }
+
+    let expText = "";
+    const expIdx = trimmedBlock.search(/(?:व्याख्या|Explanation|Exp)[\:\-\s]*/i);
+    if (expIdx !== -1) {
+      const rawExp = trimmedBlock.slice(expIdx);
+      expText = rawExp
+        .replace(/^(?:व्याख्या|Explanation|Exp)[\:\-\s]*/i, "")
+        .replace(/^[📖🌍✅✔•\-\s]+/gu, "")
+        .trim();
+
+      const ansInExp = expText.search(/(?:\n|\r|^)[📖🌍✅✔•\-\s]*(?:उत्तर|Answer|Ans)[\:\-\s]*/i);
+      if (ansInExp !== -1) {
+        expText = expText.slice(0, ansInExp).trim();
+      }
+    }
+
+    if (qText && options.some((o) => o !== "")) {
+      parsedMcqs.push({
+        id: Date.now() + idx,
+        topic: detectedTopic,
+        question: qText,
+        options: options,
+        answer: finalAns,
+        explanation: expText || "व्याख्या उपलब्ध नहीं है।",
+        tag: "GK Set",
+      });
+    }
+  });
+
+  return parsedMcqs;
+};
+
+// -------------------------------------------------------------
+// 3. MAIN REACT COMPONENT
+// -------------------------------------------------------------
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"mcq" | "docTool">("mcq");
+  const [activeTab, setActiveTab] = useState<"mcq" | "docTool">("docTool");
 
   // MCQ Generator States
   const [mcqList, setMcqList] = useState<MCQ[]>([
@@ -106,6 +312,7 @@ export default function Home() {
   const [selectedThemeKey, setSelectedThemeKey] =
     useState<keyof typeof DESIGN_THEMES>("vintageCream");
 
+  const [selectedFont, setSelectedFont] = useState("Nirmala UI");
   const [fontSize, setFontSize] = useState<"small" | "medium" | "large">("medium");
   const [layoutMode, setLayoutMode] = useState<"grid" | "vertical">("grid");
 
@@ -121,12 +328,7 @@ export default function Home() {
 
   const currentMCQ = mcqList[currentIndex] || mcqList[0];
   const activeTheme = DESIGN_THEMES[selectedThemeKey];
-
-  const fontSizes = {
-    small: { question: 15, option: 14, title: 12 },
-    medium: { question: 18, option: 16, title: 13 },
-    large: { question: 22, option: 18, title: 14 },
-  }[fontSize];
+  const currentFontSizes = fontSizes[fontSize];
 
   useEffect(() => {
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
@@ -283,117 +485,6 @@ export default function Home() {
     alert("🎉 पूरा प्रश्न-पत्र क्लिपबोर्ड में कॉपी हो गया है!");
   };
 
-  // 🎯 PERFECT & BULLETPROOF PARSER FOR ALL 20 QUESTIONS & EXPLANATIONS
-  const parseRawTextToMCQs = (rawText: string): MCQ[] => {
-    if (!rawText || !rawText.trim()) return [];
-
-    const normalizedText = rawText
-      .replace(/\u00A0/g, " ")
-      .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "\n");
-
-    let detectedTopic = "सामान्य ज्ञान (GK)";
-
-    const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—|–|-|\d)/i);
-    if (topicHeaderMatch && topicHeaderMatch[1].trim()) {
-      const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
-      if (foundTopic.length > 2) detectedTopic = foundTopic;
-    }
-
-    const rawBlocks = normalizedText.split(/(?=\n\s*(?:प्रश्न\s*\d+|\b\d{1,3}\b|Q\d{1,3})[\.\:\-\)\s]+)/gi);
-    const parsedMcqs: MCQ[] = [];
-
-    rawBlocks.forEach((block, idx) => {
-      const trimmedBlock = block.trim();
-      if (!trimmedBlock) return;
-
-      const lines = trimmedBlock
-        .split("\n")
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0);
-
-      if (lines.length === 0) return;
-
-      let qText = "";
-      let optA = "", optB = "", optC = "", optD = "";
-      let ansLetter = "";
-      let rawAnsLine = "";
-
-      for (const line of lines) {
-        const cleanL = line.replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
-        if (/^(?:प्रश्न\s*\d+|\b\d{1,3}\b|Q\d{1,3})[\.\:\-\)\s]+/i.test(cleanL)) {
-          qText = cleanL.replace(/^(?:प्रश्न\s*\d+|\b\d{1,3}\b|Q\d{1,3})[\.\:\-\)\s]+\s*/i, "").trim();
-          break;
-        }
-      }
-
-      if (!qText && lines[0] && !/^[A-D][\.\:\-\)\s]+/i.test(lines[0])) {
-        qText = lines[0].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
-      }
-
-      lines.forEach((line) => {
-        const cleanL = line.replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
-
-        if (/^A[\.\:\-\)\s]+/i.test(cleanL)) {
-          optA = cleanL.replace(/^A[\.\:\-\)\s]+\s*/i, "").trim();
-        } else if (/^B[\.\:\-\)\s]+/i.test(cleanL)) {
-          optB = cleanL.replace(/^B[\.\:\-\)\s]+\s*/i, "").trim();
-        } else if (/^C[\.\:\-\)\s]+/i.test(cleanL)) {
-          optC = cleanL.replace(/^C[\.\:\-\)\s]+\s*/i, "").trim();
-        } else if (/^D[\.\:\-\)\s]+/i.test(cleanL)) {
-          optD = cleanL.replace(/^D[\.\:\-\)\s]+\s*/i, "").trim();
-        } else if (cleanL.includes("उत्तर") || cleanL.toLowerCase().includes("answer") || cleanL.toLowerCase().includes("ans")) {
-          rawAnsLine = cleanL;
-          const letterMatch = cleanL.match(/(?:उत्तर|Answer|Ans)[\:\-\s]*([A-D])/i);
-          if (letterMatch) {
-            ansLetter = letterMatch[1].toUpperCase();
-          }
-        }
-      });
-
-      const options = [optA.trim(), optB.trim(), optC.trim(), optD.trim()];
-
-      let finalAns = options[0] || "";
-      if (ansLetter === "A") finalAns = options[0];
-      else if (ansLetter === "B") finalAns = options[1];
-      else if (ansLetter === "C") finalAns = options[2];
-      else if (ansLetter === "D") finalAns = options[3];
-      else if (rawAnsLine) {
-        const matched = options.find((o) => o && rawAnsLine.includes(o));
-        if (matched) finalAns = matched;
-      }
-
-      let expText = "";
-      const expIdx = trimmedBlock.search(/(?:व्याख्या|Explanation|Exp)[\:\-\s]*/i);
-      if (expIdx !== -1) {
-        const rawExp = trimmedBlock.slice(expIdx);
-        expText = rawExp
-          .replace(/^(?:व्याख्या|Explanation|Exp)[\:\-\s]*/i, "")
-          .replace(/^[📖🌍✅✔•\-\s]+/gu, "")
-          .trim();
-
-        const ansInExp = expText.search(/(?:\n|\r|^)[📖🌍✅✔•\-\s]*(?:उत्तर|Answer|Ans)[\:\-\s]*/i);
-        if (ansInExp !== -1) {
-          expText = expText.slice(0, ansInExp).trim();
-        }
-      }
-
-      if (qText && options.some((o) => o !== "")) {
-        parsedMcqs.push({
-          id: Date.now() + idx,
-          topic: detectedTopic,
-          question: qText,
-          options: options,
-          answer: finalAns,
-          explanation: expText || "व्याख्या उपलब्ध नहीं है।",
-          tag: "GK Set",
-        });
-      }
-    });
-
-    return parsedMcqs;
-  };
-
   const handleProcessPastedText = () => {
     if (!pastedText.trim()) {
       alert("कृपया बॉक्स में प्रश्न पेस्ट करें!");
@@ -499,10 +590,34 @@ export default function Home() {
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
-        const pageText = textContent.items
-          .map((item: any) => item.str)
-          .join("\n");
-        fullText += pageText + "\n";
+
+        // Spatial Y & X coordinate sorting for PDF text items
+        const items = (textContent.items as any[]).filter((it) => it.str && it.str.trim().length > 0);
+
+        // Group by Y position (row tolerance 6px)
+        const rows: { y: number; items: any[] }[] = [];
+        for (const item of items) {
+          const itemY = item.transform ? item.transform[5] : 0;
+          const existingRow = rows.find((r) => Math.abs(r.y - itemY) < 6);
+          if (existingRow) {
+            existingRow.items.push(item);
+          } else {
+            rows.push({ y: itemY, items: [item] });
+          }
+        }
+
+        // Sort rows Top -> Bottom (Y descending in PDF)
+        rows.sort((a, b) => b.y - a.y);
+
+        let pageStr = "";
+        for (const row of rows) {
+          // Sort items in row Left -> Right (X ascending)
+          row.items.sort((a, b) => (a.transform ? a.transform[4] : 0) - (b.transform ? b.transform[4] : 0));
+          const rowText = row.items.map((it) => it.str).join(" ");
+          pageStr += rowText + "\n";
+        }
+
+        fullText += pageStr + "\n";
       }
 
       if (!fullText.trim()) {
@@ -526,7 +641,7 @@ export default function Home() {
   };
 
   // -------------------------------------------------------------
-  // 📄 DOCUMENT EXACT TEXT EXTRACTOR & COPY ENGINE (NEW FEATURE)
+  // 📄 SPATIAL COORDINATE-AWARE DOCUMENT EXTRACTOR
   // -------------------------------------------------------------
   const handleExtractExactDocumentText = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -536,7 +651,7 @@ export default function Home() {
     setExtractedFileName(file.name.replace(/\.[^/.]+$/, ""));
 
     try {
-      let extractedText = "";
+      let rawExtractedText = "";
       const extension = file.name.split(".").pop()?.toLowerCase();
 
       if (extension === "pdf") {
@@ -546,31 +661,70 @@ export default function Home() {
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-        let fullText = "";
+        let fullDocText = "";
+
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
           const textContent = await page.getTextContent();
-          const pageText = textContent.items
-            .map((item: any) => item.str)
-            .join(" ");
-          fullText += `--- पृष्ठ ${i} ---\n${pageText}\n\n`;
+
+          // Extract non-empty text items
+          const items = (textContent.items as any[]).filter((it) => it.str && it.str.length > 0);
+
+          // Group items into spatial lines based on Y-coordinate (tolerance: 6px)
+          const lineBuckets: { y: number; items: any[] }[] = [];
+          for (const item of items) {
+            const itemY = item.transform ? item.transform[5] : 0;
+            const targetBucket = lineBuckets.find((b) => Math.abs(b.y - itemY) < 6);
+            if (targetBucket) {
+              targetBucket.items.push(item);
+            } else {
+              lineBuckets.push({ y: itemY, items: [item] });
+            }
+          }
+
+          // Sort lines Top -> Bottom (PDF coordinates Y decreases going down)
+          lineBuckets.sort((a, b) => b.y - a.y);
+
+          let pageLines = [];
+          for (const bucket of lineBuckets) {
+            // Sort items inside line Left -> Right (X coordinate)
+            bucket.items.sort((a, b) => (a.transform ? a.transform[4] : 0) - (b.transform ? b.transform[4] : 0));
+
+            let lineStr = "";
+            let lastX = null;
+
+            for (const item of bucket.items) {
+              const currentX = item.transform ? item.transform[4] : 0;
+              if (lastX !== null && currentX - lastX > 12 && !lineStr.endsWith(" ")) {
+                lineStr += "   "; // Add gap between side-by-side elements (e.g., Option A vs Option B)
+              }
+              lineStr += item.str;
+              lastX = currentX + (item.width || item.str.length * 6);
+            }
+
+            pageLines.push(lineStr);
+          }
+
+          fullDocText += `=== पृष्ठ ${i} ===\n` + pageLines.join("\n") + "\n\n";
         }
-        extractedText = fullText;
+
+        rawExtractedText = fullDocText;
       } else if (extension === "docx") {
         const arrayBuffer = await file.arrayBuffer();
         const result = await mammoth.extractRawText({ arrayBuffer });
-        extractedText = result.value;
+        rawExtractedText = result.value;
       } else if (extension === "txt") {
-        extractedText = await file.text();
+        rawExtractedText = await file.text();
       } else {
         alert("केवल PDF, Word (.docx) या Text (.txt) फ़ाइल अपलोड करें!");
         setIsExtractingDoc(false);
         return;
       }
 
-      if (extractedText.trim()) {
-        setExtractedDocText(extractedText);
-        alert(`🎉 सफलता! '${file.name}' से पूरी तरह हूबहू टेक्स्ट निकाल लिया गया है!`);
+      if (rawExtractedText.trim()) {
+        const structuredText = formatDocumentStructure(rawExtractedText);
+        setExtractedDocText(structuredText);
+        alert(`🎉 सफलता! '${file.name}' से पूरी तरह व्यवस्थित टेक्स्ट निकाल लिया गया है!`);
       } else {
         alert("फ़ाइल में से टेक्स्ट नहीं पढ़ा जा सका। फ़ाइल खाली या स्कैन्ड इमेज हो सकती है।");
       }
@@ -616,7 +770,9 @@ export default function Home() {
     alert("🎉 निकाला गया टेक्स्ट MCQ पेस्ट बॉक्स में भेज दिया गया है! अब 'Load Questions' बटन दबाएँ।");
   };
 
-  // PPT Export Engine
+  // -------------------------------------------------------------
+  // PPT EXPORT ENGINE
+  // -------------------------------------------------------------
   const handleDownloadPPT = async () => {
     const validMcqs = mcqList.filter((m) => m.question.trim() !== "");
 
@@ -629,6 +785,8 @@ export default function Home() {
     pptx.layout = "LAYOUT_16x9";
     const theme = DESIGN_THEMES[selectedThemeKey];
 
+    const PPT_FONT = selectedFont;
+
     const mainTopic = validMcqs[0]?.topic || "महत्वपूर्ण प्रश्नोत्तरी";
 
     const addBranding = (slide: pptxgen.Slide) => {
@@ -640,6 +798,7 @@ export default function Home() {
           h: 0.3,
           fontSize: 10,
           bold: true,
+          fontFace: PPT_FONT,
           color: theme.subTextColor,
           align: "right",
         });
@@ -666,6 +825,7 @@ export default function Home() {
       h: 1.0,
       fontSize: 32,
       bold: true,
+      fontFace: PPT_FONT,
       color: theme.titleColor,
       align: "left",
     });
@@ -676,6 +836,7 @@ export default function Home() {
       w: 7.6,
       h: 0.5,
       fontSize: 18,
+      fontFace: PPT_FONT,
       color: theme.subTextColor,
       align: "left",
     });
@@ -687,6 +848,7 @@ export default function Home() {
       h: 0.5,
       fontSize: 15,
       bold: true,
+      fontFace: PPT_FONT,
       color: theme.correctColor,
     });
     addBranding(coverSlide);
@@ -711,7 +873,8 @@ export default function Home() {
         y: 0.4,
         w: 5.5,
         h: 0.5,
-        fontSize: fontSizes.title,
+        fontSize: currentFontSizes.title,
+        fontFace: PPT_FONT,
         color: theme.titleColor,
         bold: true,
       });
@@ -721,7 +884,8 @@ export default function Home() {
         y: 0.4,
         w: 2.4,
         h: 0.5,
-        fontSize: fontSizes.title,
+        fontSize: currentFontSizes.title,
+        fontFace: PPT_FONT,
         color: theme.subTextColor,
         bold: true,
         align: "right",
@@ -741,8 +905,9 @@ export default function Home() {
         y: 1.0,
         w: 8.0,
         h: 1.3,
-        fontSize: fontSizes.question,
+        fontSize: currentFontSizes.question,
         bold: true,
+        fontFace: PPT_FONT,
         color: theme.textColor,
         valign: "middle",
       });
@@ -773,8 +938,9 @@ export default function Home() {
             y: pos.y,
             w: 3.7,
             h: 1.1,
-            fontSize: fontSizes.option,
+            fontSize: currentFontSizes.option,
             bold: true,
+            fontFace: PPT_FONT,
             color: theme.textColor,
             valign: "middle",
           });
@@ -799,8 +965,9 @@ export default function Home() {
             y: y,
             w: 7.8,
             h: 0.6,
-            fontSize: fontSizes.option,
+            fontSize: currentFontSizes.option,
             bold: true,
+            fontFace: PPT_FONT,
             color: theme.textColor,
             valign: "middle",
           });
@@ -826,7 +993,7 @@ export default function Home() {
         y: 0.4,
         w: 8.0,
         h: 0.5,
-        fontSize: fontSizes.title,
+        fontSize: currentFontSizes.title,
         color: theme.titleColor,
         bold: true,
       });
@@ -845,8 +1012,9 @@ export default function Home() {
         y: 1.0,
         w: 7.8,
         h: 1.0,
-        fontSize: fontSizes.question,
+        fontSize: currentFontSizes.question,
         bold: true,
+        fontFace: PPT_FONT,
         color: theme.correctColor,
         valign: "middle",
       });
@@ -867,6 +1035,7 @@ export default function Home() {
         h: 0.4,
         fontSize: 16,
         bold: true,
+        fontFace: PPT_FONT,
         color: theme.titleColor,
       });
 
@@ -875,7 +1044,8 @@ export default function Home() {
         y: 2.9,
         w: 7.8,
         h: 2.0,
-        fontSize: fontSizes.option,
+        fontSize: currentFontSizes.option,
+        fontFace: PPT_FONT,
         color: theme.textColor,
         valign: "top",
       });
@@ -893,22 +1063,23 @@ export default function Home() {
       h: 0.5,
       fontSize: 20,
       bold: true,
+      fontFace: PPT_FONT,
       color: theme.titleColor,
     });
 
     const rows: any[] = [
       [
-        { text: "क्र.", options: { bold: true, fill: theme.cardBg, color: theme.titleColor } },
-        { text: "प्रश्न (Question)", options: { bold: true, fill: theme.cardBg, color: theme.titleColor } },
-        { text: "सही उत्तर", options: { bold: true, fill: theme.cardBg, color: theme.correctColor } },
+        { text: "क्र.", options: { bold: true, fontFace: PPT_FONT, fill: theme.cardBg, color: theme.titleColor } },
+        { text: "प्रश्न (Question)", options: { bold: true, fontFace: PPT_FONT, fill: theme.cardBg, color: theme.titleColor } },
+        { text: "सही उत्तर", options: { bold: true, fontFace: PPT_FONT, fill: theme.cardBg, color: theme.correctColor } },
       ],
     ];
 
     validMcqs.forEach((mcq, idx) => {
       rows.push([
-        { text: `Q${idx + 1}`, options: { bold: true, color: theme.textColor } },
-        { text: mcq.question.slice(0, 45) + "...", options: { color: theme.subTextColor } },
-        { text: mcq.answer, options: { bold: true, color: theme.correctColor } },
+        { text: `Q${idx + 1}`, options: { bold: true, fontFace: PPT_FONT, color: theme.textColor } },
+        { text: mcq.question.slice(0, 45) + "...", options: { fontFace: PPT_FONT, color: theme.subTextColor } },
+        { text: mcq.answer, options: { bold: true, fontFace: PPT_FONT, color: theme.correctColor } },
       ]);
     });
 
@@ -943,18 +1114,8 @@ export default function Home() {
             </p>
           </div>
 
-          {/* TAB SWITCHER BUTTONS */}
+          {/* TAB SWITCHER */}
           <div className="flex bg-slate-800 p-1 rounded-xl border border-white/10">
-            <button
-              onClick={() => setActiveTab("mcq")}
-              className={`px-4 py-2 text-xs font-bold rounded-lg transition ${
-                activeTab === "mcq"
-                  ? "bg-blue-600 text-white shadow-lg"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              🎯 MCQ PPT Studio
-            </button>
             <button
               onClick={() => setActiveTab("docTool")}
               className={`px-4 py-2 text-xs font-bold rounded-lg transition ${
@@ -964,6 +1125,16 @@ export default function Home() {
               }`}
             >
               📄 Exact Document Copy Tool
+            </button>
+            <button
+              onClick={() => setActiveTab("mcq")}
+              className={`px-4 py-2 text-xs font-bold rounded-lg transition ${
+                activeTab === "mcq"
+                  ? "bg-blue-600 text-white shadow-lg"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              🎯 MCQ PPT Studio
             </button>
           </div>
 
@@ -984,9 +1155,9 @@ export default function Home() {
         </div>
       </header>
 
-      {/* MAIN CONTAINER */}
+      {/* DYNAMIC CONTENT */}
       {activeTab === "docTool" ? (
-        /* DOCUMENT EXACT TEXT EXTRACTOR & COPY TOOL (NEW FEATURE) */
+        /* EXACT DOCUMENT COPY GENERATOR TAB */
         <div className="mx-auto max-w-6xl px-6 py-8">
           <div className="rounded-2xl border border-purple-500/30 bg-slate-900 p-6 shadow-2xl">
             <div className="mb-6 flex flex-col md:flex-row md:items-center justify-between border-b border-white/10 pb-4 gap-4">
@@ -1032,7 +1203,6 @@ export default function Home() {
               )}
             </div>
 
-            {/* UPLOAD FILE ZONE */}
             <div className="mb-6 rounded-2xl border-2 border-dashed border-purple-500/40 bg-purple-950/10 p-8 text-center">
               <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-full bg-purple-600/20 text-3xl text-purple-400">
                 📁
@@ -1055,7 +1225,6 @@ export default function Home() {
               </label>
             </div>
 
-            {/* EXTRACTED TEXT DISPLAY & EDIT AREA */}
             {extractedDocText ? (
               <div>
                 <div className="mb-2 flex items-center justify-between text-xs font-bold text-slate-300">
@@ -1069,7 +1238,7 @@ export default function Home() {
                 <textarea
                   value={extractedDocText}
                   onChange={(e) => setExtractedDocText(e.target.value)}
-                  className="h-96 w-full rounded-2xl border border-white/10 bg-slate-950 p-4 font-mono text-sm leading-relaxed text-slate-200 outline-none focus:border-purple-500 shadow-inner"
+                  className="h-[500px] w-full rounded-2xl border border-white/10 bg-slate-950 p-4 font-mono text-sm leading-relaxed text-slate-200 outline-none focus:border-purple-500 shadow-inner"
                   placeholder="यहाँ निकाला हुआ टेक्स्ट दिखेगा..."
                 />
               </div>
@@ -1130,6 +1299,24 @@ export default function Home() {
                   </button>
                 ))}
               </div>
+            </div>
+
+            {/* FONT SELECTOR */}
+            <div className="mb-5 rounded-xl border border-white/10 bg-slate-800/80 p-4">
+              <label className="block text-xs font-bold text-green-400 mb-2">
+                🔤 Choose PPT Slide Font Style (फ़ॉन्ट शैली चुनें)
+              </label>
+              <select
+                value={selectedFont}
+                onChange={(e) => setSelectedFont(e.target.value)}
+                className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2.5 text-xs font-bold text-slate-200 outline-none focus:border-green-500 shadow-sm"
+              >
+                {AVAILABLE_FONTS.map((font) => (
+                  <option key={font.id} value={font.id}>
+                    {font.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {/* FONT SIZE & LAYOUT CONTROLS */}
@@ -1435,6 +1622,7 @@ export default function Home() {
               style={{
                 backgroundColor: `#${activeTheme.bg}`,
                 borderColor: `#${activeTheme.border}`,
+                fontFamily: selectedFont,
               }}
             >
               <div>
