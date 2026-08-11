@@ -93,7 +93,7 @@ const fontSizes = {
 };
 
 // -------------------------------------------------------------
-// 2. HELPER & CLEANING FUNCTIONS
+// 2. SMART AUTO-CORRECTION DICTIONARY FOR BROKEN PDF FONTS
 // -------------------------------------------------------------
 const cleanText = (text: string) => {
   if (!text) return "";
@@ -103,62 +103,59 @@ const cleanText = (text: string) => {
     .trim();
 };
 
-// विस्तृत देवनागरी सुधार एवं वर्ड मर्सिंग
-const fixDevanagariPdfGlyphs = (text: string): string => {
+const applySmartDictionaryCorrections = (text: string): string => {
   if (!text) return "";
-
   let s = text;
 
-  // सामान्य टूटे हुए शब्दों का री-मैपिंग
-  s = s
-    .replace(/फिटर\s+ोरी/g, "फिटर थ्योरी")
-    .replace(/असे\s*म्बली/g, "असेम्बली")
-    .replace(/असेम्बली\s+के\s+निमाण\s+म/g, "असेम्बली के निर्माण में")
-    .replace(/निमाण/g, "निर्माण")
-    .replace(/पदाथ/g, "पदार्थ")
-    .replace(/काय\?/g, "कार्य?")
-    .replace(/अपघषक/g, "अपघर्षक")
-    .replace(/परिकरण/g, "परिष्करण");
+  // 🛠️ यहाँ PDF के टूटे हुए हिंदी शब्दों को सीधे ठीक किया जाता है
+  const replacements: { [key: string]: string } = {
+    "फिटर  ोरी": "फिटर थ्योरी",
+    "फिटर ोरी": "फिटर थ्योरी",
+    "फिटरोरी": "फिटर थ्योरी",
+    "असे म्बली": "असेंबली",
+    "असेम्बली": "असेंबली",
+    "निमाण म": "निर्माण में",
+    "परष्करण": "परिष्करण",
+    "परक्षण": "परीक्षण",
+    "अपघषक": "अपघर्षक",
+    "पदाथ": "पदार्थ",
+    "काय": "कार्य",
+  };
 
-  // टूटी मात्राओं को जोड़ना
+  for (const [broken, fixed] of Object.entries(replacements)) {
+    const regex = new RegExp(broken, "g");
+    s = s.replace(regex, fixed);
+  }
+
+  // टूटी मात्राओं को स्वचालित रूप से ठीक करना
   s = s.replace(/\u093F\s*([\u0904-\u0939\u0958-\u095F])/g, "$1\u093F");
-  s = s.replace(/([\u0900-\u097F])\s+([\u093A-\u094D])/g, "$1$2");
-
+  
   return s;
 };
 
-// दस्तावेज़ की संरचना को क्लीन एवं व्यवस्थित करना
 const formatDocumentStructure = (rawText: string): string => {
   if (!rawText) return "";
 
-  let s = fixDevanagariPdfGlyphs(rawText);
+  let s = applySmartDictionaryCorrections(rawText);
 
-  // लाइनों की अतिरिक्त खाली जगह हटाना
   s = s
     .split("\n")
     .map((line) => line.replace(/[ \t]+/g, " ").trim())
     .filter((line) => line.length > 0)
     .join("\n");
 
-  // उत्तर की टूटी हुई लाइनों को एक साथ जोड़ना (उदा. Your Answer:\n (D) -\n Correct)
+  // उत्तर की टूटी लाइनों को ठीक करना
   s = s.replace(/Your\s*Answer:\s*\n+\s*(\([A-D]\)\s*-?)\s*\n+\s*(Correct|Incorrect)/gi, "Your Answer: $1 $2");
   s = s.replace(/Your\s*Answer:\s*(\([A-D]\)\s*-?)\s*\n+\s*(Correct|Incorrect)/gi, "Your Answer: $1 $2");
   s = s.replace(/Correct\s*Answer:\s*\n+\s*(\([A-D]\)\s*.*)/gi, "Correct Answer: $1");
 
-  // प्रश्नों के आगे न्यू लाइन
+  // प्रश्नों और विकल्पों को सही क्रम में रखना
   s = s.replace(/(?<!\n)\s*(Q\d{1,4}\b|Question\s*\d+|प्रश्न\s*\d+)/gi, "\n\n$1");
-
-  // विकल्पों (A), (B), (C), (D) को अलग-अलग लाइन पर लाना
   s = s.replace(/([^\n])\s*(\([A-Da-d]\))/g, "$1\n$2");
   s = s.replace(/([^\n])\s*\b([A-D])[\.\)]\s+(?=[^\n])/g, "$1\n($2) ");
-
-  // उत्तर व व्याख्या से पहले लाइन ब्रेक
   s = s.replace(/([^\n])\s*(Your Answer:|Correct Answer:|उत्तर:|सही उत्तर:|व्याख्या:|Explanation:)/gi, "$1\n$2");
-
-  // खाली ब्रैकेट या फालतू लाइन्स साफ़ करना
-  s = s.replace(/\n\s*\(\s*\n/g, "\n");
+  
   s = s.replace(/\n{3,}/g, "\n\n");
-
   return s.trim();
 };
 
@@ -275,44 +272,8 @@ const parseRawTextToMCQs = (rawText: string): MCQ[] => {
 };
 
 // -------------------------------------------------------------
-// 3. OCR & FULL-PROOF FILE EXTRACTION ENGINE
+// 3. PDF EXTRACTOR ENGINE
 // -------------------------------------------------------------
-const loadTesseract = (): Promise<any> => {
-  return new Promise((resolve, reject) => {
-    if ((window as any).Tesseract) {
-      resolve((window as any).Tesseract);
-      return;
-    }
-    const script = document.createElement("script");
-    script.src = "https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js";
-    script.onload = () => resolve((window as any).Tesseract);
-    script.onerror = () => {
-      const script2 = document.createElement("script");
-      script2.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
-      script2.onload = () => resolve((window as any).Tesseract);
-      script2.onerror = () => reject(new Error("OCR लाइब्रेरी लोड नहीं हो सकी। इंटरनेट कनेक्शन जाँचें।"));
-      document.head.appendChild(script2);
-    };
-    document.head.appendChild(script);
-  });
-};
-
-const runOcrOnImageSource = async (
-  imageSource: File | Blob | string | HTMLCanvasElement,
-  onStatusUpdate?: (msg: string) => void
-): Promise<string> => {
-  if (onStatusUpdate) onStatusUpdate("⏳ उच्च-सटीकता OCR इंजन (Hindi + English) लोड हो रहा है...");
-  const Tesseract = await loadTesseract();
-
-  if (onStatusUpdate) onStatusUpdate("🔍 पिक्सल-बाय-पिक्सल टेक्स्ट पढ़ा जा रहा है...");
-  const worker = await Tesseract.createWorker("hin+eng");
-
-  const result = await worker.recognize(imageSource);
-  await worker.terminate();
-
-  return result.data.text || "";
-};
-
 const extractPdfTextSafe = async (
   file: File,
   onStatusUpdate?: (msg: string) => void
@@ -331,8 +292,7 @@ const extractPdfTextSafe = async (
   }
 
   try {
-    if (onStatusUpdate) onStatusUpdate("⏳ PDF से हाई-क्वालिटी OCR किया जा रहा है...");
-
+    if (onStatusUpdate) onStatusUpdate("⏳ PDF फ़ाइल खोली जा रही है...");
     const arrayBuffer = await file.arrayBuffer();
     const loadingTask = pdfjsLib.getDocument({
       data: arrayBuffer,
@@ -341,35 +301,15 @@ const extractPdfTextSafe = async (
     });
 
     const pdf = await loadingTask.promise;
-    let fullOcrText = "";
+    let fullText = "";
 
-    // सभी पृष्ठों को HD कैनवास पर रेंडर करके OCR चलाना (ताकि कोई भी मात्रा न कटे)
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      if (onStatusUpdate) onStatusUpdate(`📷 पृष्ठ ${pageNum}/${pdf.numPages} की जाँच व OCR किया जा रहा है...`);
-      const page = await pdf.getPage(pageNum);
-      
-      // टेक्स्ट कंटेंट का त्वरित प्रयास
+    for (let i = 1; i <= pdf.numPages; i++) {
+      if (onStatusUpdate) onStatusUpdate(`📄 पृष्ठ ${i}/${pdf.numPages} पढ़ा जा रहा है...`);
+      const page = await pdf.getPage(i);
       const textContent = await page.getTextContent();
+
       const items = (textContent.items as any[]).filter((it) => it && typeof it.str === "string");
-      const directText = items.map((it) => it.str).join(" ");
 
-      // अगर सीधी फ़ाइल में फॉन्ट गायब हैं (जैसे 'फिटर ोरी'), तो HD कैनवास OCR का उपयोग करें
-      if (directText.includes("ोरी") || directText.includes("निमाण") || directText.length < 20) {
-        const viewport = page.getViewport({ scale: 2.0 });
-        const canvas = document.createElement("canvas");
-        const context = canvas.getContext("2d");
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
-
-        if (context) {
-          await page.render({ canvasContext: context, viewport }).promise;
-          const pageOcrText = await runOcrOnImageSource(canvas, onStatusUpdate);
-          fullOcrText += `=== पृष्ठ ${pageNum} ===\n` + pageOcrText + "\n\n";
-          continue;
-        }
-      }
-
-      // मानक स्ट्रक्चर्ड टेक्स्ट एक्सट्रैक्शन
       const lineBuckets: { y: number; items: any[] }[] = [];
       for (const item of items) {
         const itemY = item.transform ? Math.round(item.transform[5]) : 0;
@@ -410,13 +350,16 @@ const extractPdfTextSafe = async (
         }
       }
 
-      fullOcrText += `=== पृष्ठ ${pageNum} ===\n` + pageLines.join("\n") + "\n\n";
+      const pageResult = pageLines.join("\n").trim();
+      if (pageResult.length > 0) {
+        fullText += `=== पृष्ठ ${i} ===\n` + pageResult + "\n\n";
+      }
     }
 
-    return fullOcrText;
+    return fullText;
   } catch (err: any) {
-    console.error("PDF Parsing Fallback to Full OCR:", err);
-    return await runOcrOnImageSource(file, onStatusUpdate);
+    console.error("PDF Parsing Error:", err);
+    throw new Error("PDF पढ़ने में त्रुटि: " + (err?.message || "फ़ाइल पासवर्ड-सुरक्षित या डैमेज हो सकती है।"));
   }
 };
 
@@ -711,11 +654,11 @@ export default function Home() {
     if (!file) return;
 
     try {
-      setExtractionStatusMsg("⏳ PDF/इमेज पढ़ा जा रहा है...");
+      setExtractionStatusMsg("⏳ PDF फ़ाइल पढ़ी जा रही है...");
       const fullText = await extractPdfTextSafe(file, (msg) => setExtractionStatusMsg(msg));
 
       if (!fullText.trim()) {
-        alert("टेक्स्ट नहीं पढ़ा जा सका। फ़ाइल खाली या अत्यधिक धुंधली हो सकती है।");
+        alert("टेक्स्ट नहीं पढ़ा जा सका। फ़ाइल खाली या धुंधली हो सकती है।");
         return;
       }
 
@@ -736,9 +679,6 @@ export default function Home() {
     }
   };
 
-  // -------------------------------------------------------------
-  // 📄 ACCURATE SPATIAL DOCUMENT & IMAGE EXTRACTOR
-  // -------------------------------------------------------------
   const handleExtractExactDocumentText = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -750,11 +690,8 @@ export default function Home() {
     try {
       let rawExtractedText = "";
       const extension = file.name.split(".").pop()?.toLowerCase() || "";
-      const isImage = ["png", "jpg", "jpeg", "webp", "bmp"].includes(extension) || file.type.startsWith("image/");
 
-      if (isImage) {
-        rawExtractedText = await runOcrOnImageSource(file, (msg) => setExtractionStatusMsg(msg));
-      } else if (extension === "pdf") {
+      if (extension === "pdf") {
         rawExtractedText = await extractPdfTextSafe(file, (msg) => setExtractionStatusMsg(msg));
       } else if (extension === "docx") {
         const arrayBuffer = await file.arrayBuffer();
@@ -763,7 +700,7 @@ export default function Home() {
       } else if (extension === "txt") {
         rawExtractedText = await file.text();
       } else {
-        rawExtractedText = await runOcrOnImageSource(file, (msg) => setExtractionStatusMsg(msg));
+        rawExtractedText = await extractPdfTextSafe(file, (msg) => setExtractionStatusMsg(msg));
       }
 
       if (rawExtractedText.trim()) {
@@ -816,9 +753,6 @@ export default function Home() {
     alert("🎉 निकाला गया टेक्स्ट MCQ पेस्ट बॉक्स में भेज दिया गया है! अब 'Load Questions' बटन दबाएँ।");
   };
 
-  // -------------------------------------------------------------
-  // PPT EXPORT ENGINE
-  // -------------------------------------------------------------
   const handleDownloadPPT = async () => {
     const validMcqs = mcqList.filter((m) => m.question.trim() !== "");
 
@@ -830,9 +764,7 @@ export default function Home() {
     const pptx = new pptxgen();
     pptx.layout = "LAYOUT_16x9";
     const theme = DESIGN_THEMES[selectedThemeKey];
-
     const PPT_FONT = selectedFont;
-
     const mainTopic = validMcqs[0]?.topic || "महत्वपूर्ण प्रश्नोत्तरी";
 
     const addBranding = (slide: pptxgen.Slide) => {
@@ -851,10 +783,8 @@ export default function Home() {
       }
     };
 
-    // COVER SLIDE
     const coverSlide = pptx.addSlide();
     coverSlide.background = { color: theme.bg };
-
     coverSlide.addShape("roundRect" as any, {
       x: 0.8,
       y: 0.6,
@@ -863,7 +793,6 @@ export default function Home() {
       fill: { color: theme.cardBg },
       line: { color: theme.titleColor, width: 2 },
     });
-
     coverSlide.addText(mainTopic, {
       x: 1.2,
       y: 1.2,
@@ -875,7 +804,6 @@ export default function Home() {
       color: theme.titleColor,
       align: "left",
     });
-
     coverSlide.addText("बहुविकल्पीय प्रश्नोत्तरी एवं विस्तृत व्याख्या सेट", {
       x: 1.2,
       y: 2.3,
@@ -886,7 +814,6 @@ export default function Home() {
       color: theme.subTextColor,
       align: "left",
     });
-
     coverSlide.addText(`कुल प्रश्न: ${validMcqs.length} • Gamma Presentation`, {
       x: 1.2,
       y: 3.6,
@@ -899,10 +826,8 @@ export default function Home() {
     });
     addBranding(coverSlide);
 
-    // MCQ SLIDES
     for (let i = 0; i < validMcqs.length; i++) {
       const mcq = validMcqs[i];
-
       const slide1 = pptx.addSlide();
       slide1.background = { color: theme.bg };
 
@@ -913,7 +838,6 @@ export default function Home() {
         h: 0.5,
         fill: { color: theme.cardBg },
       });
-
       slide1.addText(`विषय: ${mcq.topic} ${mcq.tag ? `[${mcq.tag}]` : ""}`, {
         x: 1.0,
         y: 0.4,
@@ -924,7 +848,6 @@ export default function Home() {
         color: theme.titleColor,
         bold: true,
       });
-
       slide1.addText(`प्रश्न ${i + 1} / ${validMcqs.length}`, {
         x: 6.6,
         y: 0.4,
@@ -945,7 +868,6 @@ export default function Home() {
         fill: { color: theme.cardBg },
         line: { color: theme.titleColor, width: 1.5 },
       });
-
       slide1.addText(`Q${i + 1}.  ${mcq.question}`, {
         x: 1.0,
         y: 1.0,
@@ -965,11 +887,9 @@ export default function Home() {
           { x: 0.8, y: 3.8 },
           { x: 5.1, y: 3.8 },
         ];
-
         mcq.options.forEach((opt, optIdx) => {
           const pos = optPositions[optIdx];
           const optionLetter = String.fromCharCode(65 + optIdx);
-
           slide1.addShape("roundRect" as any, {
             x: pos.x,
             y: pos.y,
@@ -978,7 +898,6 @@ export default function Home() {
             fill: { color: theme.cardBg },
             line: { color: theme.border, width: 1 },
           });
-
           slide1.addText(`(${optionLetter})  ${opt}`, {
             x: pos.x + 0.2,
             y: pos.y,
@@ -996,7 +915,6 @@ export default function Home() {
         mcq.options.forEach((opt, optIdx) => {
           const y = optY[optIdx];
           const optionLetter = String.fromCharCode(65 + optIdx);
-
           slide1.addShape("roundRect" as any, {
             x: 0.8,
             y: y,
@@ -1005,26 +923,23 @@ export default function Home() {
             fill: { color: theme.cardBg },
             line: { color: theme.border, width: 1 },
           });
-
           slide1.addText(`(${optionLetter})  ${opt}`, {
             x: 1.1,
             y: y,
             w: 7.8,
             h: 0.6,
             fontSize: currentFontSizes.option,
+            bold: true,
             fontFace: PPT_FONT,
             color: theme.textColor,
             valign: "middle",
           });
         });
       }
-
       addBranding(slide1);
 
-      // ANSWER SLIDE
       const slide2 = pptx.addSlide();
       slide2.background = { color: theme.bg };
-
       slide2.addShape("roundRect" as any, {
         x: 0.8,
         y: 0.4,
@@ -1032,17 +947,16 @@ export default function Home() {
         h: 0.5,
         fill: { color: theme.cardBg },
       });
-
       slide2.addText(`विषय: ${mcq.topic} • प्रश्न ${i + 1} (उत्तर एवं व्याख्या)`, {
         x: 1.0,
         y: 0.4,
         w: 8.0,
         h: 0.5,
         fontSize: currentFontSizes.title,
+        fontFace: PPT_FONT,
         color: theme.titleColor,
         bold: true,
       });
-
       slide2.addShape("roundRect" as any, {
         x: 0.8,
         y: 1.0,
@@ -1051,7 +965,6 @@ export default function Home() {
         fill: { color: theme.correctBg },
         line: { color: theme.correctColor, width: 2 },
       });
-
       slide2.addText(`✓ सही उत्तर: ${mcq.answer}`, {
         x: 1.1,
         y: 1.0,
@@ -1063,7 +976,6 @@ export default function Home() {
         color: theme.correctColor,
         valign: "middle",
       });
-
       slide2.addShape("roundRect" as any, {
         x: 0.8,
         y: 2.2,
@@ -1072,7 +984,6 @@ export default function Home() {
         fill: { color: theme.cardBg },
         line: { color: theme.border, width: 1 },
       });
-
       slide2.addText("विस्तृत व्याख्या:", {
         x: 1.1,
         y: 2.4,
@@ -1083,7 +994,6 @@ export default function Home() {
         fontFace: PPT_FONT,
         color: theme.titleColor,
       });
-
       slide2.addText(mcq.explanation, {
         x: 1.1,
         y: 2.9,
@@ -1096,49 +1006,6 @@ export default function Home() {
       });
       addBranding(slide2);
     }
-
-    // SUMMARY SLIDE
-    const summarySlide = pptx.addSlide();
-    summarySlide.background = { color: theme.bg };
-
-    summarySlide.addText("📌 त्वरित उत्तर कुंजी (Answer Key Summary)", {
-      x: 0.8,
-      y: 0.4,
-      w: 8.4,
-      h: 0.5,
-      fontSize: 20,
-      bold: true,
-      fontFace: PPT_FONT,
-      color: theme.titleColor,
-    });
-
-    const rows: any[] = [
-      [
-        { text: "क्र.", options: { bold: true, fontFace: PPT_FONT, fill: theme.cardBg, color: theme.titleColor } },
-        { text: "प्रश्न (Question)", options: { bold: true, fontFace: PPT_FONT, fill: theme.cardBg, color: theme.titleColor } },
-        { text: "सही उत्तर", options: { bold: true, fontFace: PPT_FONT, fill: theme.cardBg, color: theme.correctColor } },
-      ],
-    ];
-
-    validMcqs.forEach((mcq, idx) => {
-      rows.push([
-        { text: `Q${idx + 1}`, options: { bold: true, fontFace: PPT_FONT, color: theme.textColor } },
-        { text: mcq.question.slice(0, 45) + "...", options: { fontFace: PPT_FONT, color: theme.subTextColor } },
-        { text: mcq.answer, options: { bold: true, fontFace: PPT_FONT, color: theme.correctColor } },
-      ]);
-    });
-
-    summarySlide.addTable(rows, {
-      x: 0.8,
-      y: 1.0,
-      w: 8.4,
-      colW: [0.8, 5.2, 2.4],
-      border: { pt: 1, color: theme.border },
-      fill: theme.bg,
-      fontSize: 13,
-      autoPage: true,
-    });
-    addBranding(summarySlide);
 
     await pptx.writeFile({
       fileName: `${mainTopic}_Presentation.pptx`,
@@ -1159,7 +1026,6 @@ export default function Home() {
             </p>
           </div>
 
-          {/* TAB SWITCHER */}
           <div className="flex bg-slate-800 p-1 rounded-xl border border-white/10">
             <button
               onClick={() => setActiveTab("docTool")}
@@ -1200,9 +1066,7 @@ export default function Home() {
         </div>
       </header>
 
-      {/* DYNAMIC CONTENT */}
       {activeTab === "docTool" ? (
-        /* EXACT DOCUMENT COPY GENERATOR TAB */
         <div className="mx-auto max-w-6xl px-6 py-8">
           <div className="rounded-2xl border border-purple-500/30 bg-slate-900 p-6 shadow-2xl">
             <div className="mb-6 flex flex-col md:flex-row md:items-center justify-between border-b border-white/10 pb-4 gap-4">
@@ -1211,7 +1075,7 @@ export default function Home() {
                   📄 Exact Document Copy Generator (हूबहू कॉपी टूल)
                 </h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  हिंदी या अंग्रेज़ी की PDF, Word (.docx), Text (.txt) या इमेज (.png, .jpg) अपलोड करें और उसका पूरा टेक्स्ट प्राप्त करें।
+                  PDF, Word (.docx), Text (.txt) या इमेज अपलोड करें और उसका सटीक टेक्स्ट प्राप्त करें।
                 </p>
               </div>
 
@@ -1256,7 +1120,7 @@ export default function Home() {
                 यहाँ फ़ाइल या इमेज अपलोड करें
               </h3>
               <p className="text-xs text-slate-400 mb-4">
-                समर्थित फ़ाइल फॉर्मेट: PDF (.pdf), Word (.docx), Plain Text (.txt), Images (.png, .jpg, .jpeg)
+                समर्थित फॉर्मेट: PDF (.pdf), Word (.docx), Plain Text (.txt), Images (.png, .jpg)
               </p>
               <label className="inline-flex cursor-pointer items-center justify-center rounded-xl bg-purple-600 px-6 py-3 text-sm font-bold text-white shadow-lg transition hover:bg-purple-500">
                 {isExtractingDoc ? (extractionStatusMsg || "⏳ टेक्स्ट निकाला जा रहा है...") : "📂 Select File or Image"}
@@ -1289,17 +1153,15 @@ export default function Home() {
               </div>
             ) : (
               <div className="rounded-xl border border-white/5 bg-slate-950/50 p-12 text-center text-xs text-slate-500">
-                💡 फ़ाइल या इमेज अपलोड करते ही यहाँ पूरा टेक्स्ट आ जाएगा। आप उस टेक्स्ट में संपादन (Edit) भी कर सकते हैं।
+                💡 फ़ाइल या इमेज अपलोड करते ही यहाँ सटीक और व्यवस्थित टेक्स्ट आ जाएगा।
               </div>
             )}
           </div>
         </div>
       ) : (
-        /* MCQ PPT STUDIO TAB */
         <div className="mx-auto grid max-w-7xl gap-6 px-6 py-8 lg:grid-cols-2">
           {/* LEFT PANEL */}
           <section className="rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-2xl">
-            {/* GEMINI API KEY INPUT */}
             <div className="mb-5 rounded-xl border border-blue-500/30 bg-blue-950/20 p-3.5">
               <label className="block text-xs font-bold text-blue-300 mb-1">
                 🔑 Gemini API Key (Paste Your Copied Key Here)
@@ -1313,7 +1175,6 @@ export default function Home() {
               />
             </div>
 
-            {/* BRANDING & WATERMARK INPUT */}
             <div className="mb-5 rounded-xl border border-white/10 bg-slate-800/80 p-3.5">
               <label className="block text-xs font-bold text-yellow-400 mb-1">
                 🏷️ Channel / Branding Watermark (PPT Footer)
@@ -1326,7 +1187,6 @@ export default function Home() {
               />
             </div>
 
-            {/* THEME SELECTOR BOX */}
             <div className="mb-5 rounded-xl border border-white/10 bg-slate-800/80 p-4">
               <h3 className="mb-3 text-sm font-bold text-blue-400">🎨 Choose Presentation Design Theme</h3>
               <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
@@ -1346,7 +1206,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* FONT SELECTOR */}
             <div className="mb-5 rounded-xl border border-white/10 bg-slate-800/80 p-4">
               <label className="block text-xs font-bold text-green-400 mb-2">
                 🔤 Choose PPT Slide Font Style (फ़ॉन्ट शैली चुनें)
@@ -1364,7 +1223,6 @@ export default function Home() {
               </select>
             </div>
 
-            {/* FONT SIZE & LAYOUT CONTROLS */}
             <div className="mb-5 grid grid-cols-2 gap-3 rounded-xl border border-white/10 bg-slate-800/60 p-3.5">
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1.5">📏 Text Font Size</label>
@@ -1412,7 +1270,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* BULK UPLOAD OPTIONS */}
             <div className="mb-4">
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-xs font-bold text-slate-300">📥 Choose Input Method</h3>
@@ -1477,7 +1334,6 @@ export default function Home() {
               )}
             </div>
 
-            {/* Question Selector Tabs */}
             <div className="mb-6 flex items-center justify-between border-b border-white/10 pb-4">
               <div className="flex max-h-36 overflow-y-auto flex-wrap gap-2 p-1">
                 {mcqList.map((m, idx) => {
@@ -1521,7 +1377,6 @@ export default function Home() {
               )}
             </div>
 
-            {/* CUSTOM VOICE UPLOAD */}
             <div className="mb-4 rounded-xl border border-green-500/30 bg-green-950/20 p-3">
               <label className="block text-xs font-bold text-green-400 mb-1">
                 🎙️ Upload Your Own Recorded Voice (.mp3 / .wav)
@@ -1614,7 +1469,7 @@ export default function Home() {
             </button>
           </section>
 
-          {/* RIGHT PANEL PREVIEW WITH GEMINI VOICE ENGINE */}
+          {/* RIGHT PANEL PREVIEW */}
           <section className="rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-2xl">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-xl font-bold">🎨 Live Preview & Gemini Audio</h2>
@@ -1636,7 +1491,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* GEMINI VOICE CONTROLLER */}
             <div className="mb-5 flex items-center justify-between rounded-xl border border-blue-500/30 bg-blue-950/20 p-3.5">
               <div className="flex items-center gap-3">
                 {!isSpeaking ? (
