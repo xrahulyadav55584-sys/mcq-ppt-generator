@@ -222,7 +222,7 @@ const formatDocumentStructure = (rawText: string): string => {
 };
 
 // -------------------------------------------------------------
-// 3. OCR & IMAGE extraction Engine (HINDI + ENGLISH)
+// 3. OCR & IMAGE EXTRACTION ENGINE (HINDI + ENGLISH)
 // -------------------------------------------------------------
 const loadTesseract = (): Promise<any> => {
   return new Promise((resolve, reject) => {
@@ -231,9 +231,15 @@ const loadTesseract = (): Promise<any> => {
       return;
     }
     const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    script.src = "https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js";
     script.onload = () => resolve((window as any).Tesseract);
-    script.onerror = () => reject(new Error("OCR इंजन लोड करने में समस्या आई। कृपया इंटरनेट कनेक्शन जाँचें।"));
+    script.onerror = () => {
+      const script2 = document.createElement("script");
+      script2.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+      script2.onload = () => resolve((window as any).Tesseract);
+      script2.onerror = () => reject(new Error("OCR लाइब्रेरी लोड नहीं हो सकी। कृपया अपना इंटरनेट कनेक्शन जाँचें।"));
+      document.head.appendChild(script2);
+    };
     document.head.appendChild(script);
   });
 };
@@ -254,13 +260,36 @@ const runOcrOnImageSource = async (
   return result.data.text || "";
 };
 
+// 🛠️ SETUP PDF.JS WORKER VIA SAME-ORIGIN BLOB TO PREVENT CORS SECURITY BLOCK
+const setupPdfWorkerBlob = async (pdfjsLib: any) => {
+  if (typeof window === "undefined") return;
+  if ((window as any)._pdfWorkerBlobUrlReady) return;
+
+  const version = pdfjsLib.version || "3.11.174";
+  const cdnWorkerUrl = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.js`;
+
+  try {
+    const res = await fetch(cdnWorkerUrl);
+    const workerScript = await res.text();
+    const blob = new Blob([workerScript], { type: "text/javascript" });
+    const blobUrl = URL.createObjectURL(blob);
+    pdfjsLib.GlobalWorkerOptions.workerSrc = blobUrl;
+    (window as any)._pdfWorkerBlobUrlReady = true;
+  } catch (err) {
+    console.warn("Blob Worker setup fallback:", err);
+    pdfjsLib.GlobalWorkerOptions.workerSrc = cdnWorkerUrl;
+  }
+};
+
 const extractPdfTextSafe = async (
   file: File,
   onStatusUpdate?: (msg: string) => void
 ): Promise<string> => {
   try {
-    const pdfjsLib = await import("pdfjs-dist/build/pdf");
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version || "3.11.174"}/build/pdf.worker.min.js`;
+    const pdfModule = await import("pdfjs-dist/build/pdf");
+    const pdfjsLib = pdfModule.default || pdfModule;
+
+    await setupPdfWorkerBlob(pdfjsLib);
 
     const arrayBuffer = await file.arrayBuffer();
     const loadingTask = pdfjsLib.getDocument({
@@ -273,6 +302,7 @@ const extractPdfTextSafe = async (
     let fullText = "";
 
     for (let i = 1; i <= pdf.numPages; i++) {
+      if (onStatusUpdate) onStatusUpdate(`📄 पृष्ठ ${i}/${pdf.numPages} पढ़ा जा रहा है...`);
       const page = await pdf.getPage(i);
       const textContent = await page.getTextContent();
 
@@ -318,18 +348,21 @@ const extractPdfTextSafe = async (
         }
       }
 
-      fullText += `=== पृष्ठ ${i} ===\n` + pageLines.join("\n") + "\n\n";
+      const pageResult = pageLines.join("\n").trim();
+      if (pageResult.length > 5) {
+        fullText += `=== पृष्ठ ${i} ===\n` + pageResult + "\n\n";
+      }
     }
 
-    // 📸 SCANNED PDF AUTO-DETECTION & OCR FALLBACK
+    // 📸 SCANNED PDF DETECTOR & CANVAS OCR FALLBACK
     if (fullText.replace(/=== पृष्ठ \d+ ===/g, "").trim().length < 15) {
-      if (onStatusUpdate) onStatusUpdate("📷 स्कैन्ड/इमेज PDF की पहचान हुई! OCR चालू हो रहा है...");
+      if (onStatusUpdate) onStatusUpdate("📷 स्कैन्ड PDF की पहचान हुई, OCR चालू हो रहा है...");
       let scannedPdfText = "";
 
       for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
         if (onStatusUpdate) onStatusUpdate(`📷 पृष्ठ ${pageNum}/${pdf.numPages} का OCR किया जा रहा है...`);
         const page = await pdf.getPage(pageNum);
-        const viewport = page.getViewport({ scale: 2.0 });
+        const viewport = page.getViewport({ scale: 1.8 });
 
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
@@ -338,18 +371,25 @@ const extractPdfTextSafe = async (
 
         if (context) {
           await page.render({ canvasContext: context, viewport }).promise;
-          const pageOcrText = await runOcrOnImageSource(canvas);
+          const pageOcrText = await runOcrOnImageSource(canvas, onStatusUpdate);
           scannedPdfText += `=== पृष्ठ ${pageNum} ===\n` + pageOcrText + "\n\n";
         }
       }
 
-      return scannedPdfText;
+      if (scannedPdfText.trim()) {
+        return scannedPdfText;
+      }
     }
 
     return fullText;
   } catch (firstErr) {
-    console.warn("Primary PDF reader failed, trying fallback OCR...", firstErr);
-    return await runOcrOnImageSource(file, onStatusUpdate);
+    console.warn("Primary PDF extraction failed, attempting OCR fallback...", firstErr);
+    try {
+      return await runOcrOnImageSource(file, onStatusUpdate);
+    } catch (secondErr: any) {
+      console.error("Secondary Image OCR Failed:", secondErr);
+      throw new Error("फ़ाइल से टेक्स्ट नहीं पढ़ा जा सका। कृपया जाँचें कि फ़ाइल सही है या नहीं।");
+    }
   }
 };
 
@@ -648,7 +688,7 @@ export default function Home() {
       const fullText = await extractPdfTextSafe(file, (msg) => setExtractionStatusMsg(msg));
 
       if (!fullText.trim()) {
-        alert("टेक्स्ट नहीं पढ़ा जा सका। फ़ाइल खाली या धुंधली हो सकती है।");
+        alert("टेक्स्ट नहीं पढ़ा जा सका। फ़ाइल खाली या अत्यधिक धुंधली हो सकती है।");
         return;
       }
 
@@ -696,7 +736,6 @@ export default function Home() {
       } else if (extension === "txt") {
         rawExtractedText = await file.text();
       } else {
-        // Fallback OCR for any unknown visual document
         rawExtractedText = await runOcrOnImageSource(file, (msg) => setExtractionStatusMsg(msg));
       }
 
