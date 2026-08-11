@@ -93,7 +93,7 @@ const fontSizes = {
 };
 
 // -------------------------------------------------------------
-// 2. HELPER, HINDI GLYPH REPAIR & STRUCTURAL FORMATTER
+// 2. HELPER & CLEANING FUNCTIONS
 // -------------------------------------------------------------
 const cleanText = (text: string) => {
   if (!text) return "";
@@ -104,89 +104,43 @@ const cleanText = (text: string) => {
 };
 
 /**
- * 🛠️ ADVANCED DEVANAGARI / HINDI PDF GLYPH & MATRA REPAIR ENGINE
- * Fixes split Unicode characters, misplaced pre-base matras (ि), and artificial letter spacing.
+ * 🛠️ DEVANAGARI MATRA REPAIR
+ * Re-attaches isolated pre-base 'ि' (U+093F) matras without destroying word spaces.
  */
-const fixHindiDevanagariPdfText = (text: string): string => {
+const fixMisplacedMatras = (text: string): string => {
   if (!text) return "";
-
-  let s = text;
-
-  // 1. Move detached pre-base Matra (ि / \u093F) to after consonant if misplaced
-  // e.g., "ि फ" -> "फि", "ि न" -> "नि", "ि द" -> "दि"
-  s = s.replace(/\u093F\s*([\u0904-\u0939\u0958-\u095F])/g, "$1\u093F");
-
-  // 2. Merge split consonants with dependent matras/halant
-  // e.g. "क ो" -> "को", "ब ो" -> "बो", "म ् ब" -> "म्ब"
-  s = s.replace(/([\u0900-\u097F])\s+([\u093A-\u094D\u0901-\u0903\u0951-\u0954])/g, "$1$2");
-
-  // 3. Remove artificial spaces between consecutive single Devanagari characters
-  // e.g., "अ से म् ब ली" -> "असेम्बली", "स ू च ी" -> "सूची"
-  s = s.replace(/(?<=[\u0900-\u097F])\s+(?=[\u0900-\u097F])/g, (match, offset, str) => {
-    // Check surrounding word context: merge if part of a split Devanagari word
-    const prevChar = str[offset - 1];
-    const nextChar = str[offset + 1];
-    if (prevChar && nextChar && prevChar.match(/[\u0900-\u097F]/) && nextChar.match(/[\u0900-\u097F]/)) {
-      return "";
-    }
-    return match;
-  });
-
-  // 4. Repeated pass for deep nested matra combinations (e.g., "ि फ ट र   ो री" -> "फिटर थ्योरी")
-  s = s
-    .replace(/([\u0900-\u097F])\s+([\u093A-\u094D])/g, "$1$2")
-    .replace(/\u093F\s*([\u0904-\u0939])/g, "$1\u093F")
-    .replace(/  +/g, " ");
-
-  return s;
+  return text.replace(/\u093F([\u0904-\u0939\u0958-\u095F])/g, "$1\u093F");
 };
 
 /**
- * 📐 FORMAT DOCUMENT LAYOUT (PRESERVE PDF QUESTIONS & OPTIONS ON NEW LINES)
+ * 📐 EXACT DOCUMENT LAYOUT FORMATTER
+ * Formats PDF text into clean, structured lines for Questions, Options, and Answers.
  */
 const formatDocumentStructure = (rawText: string): string => {
   if (!rawText) return "";
 
-  let cleaned = fixHindiDevanagariPdfText(rawText);
+  let s = fixMisplacedMatras(rawText);
 
-  // Line breaks before Question Markers (Q1, Q2, Q1 [, Q.1, Question 1, प्रश्न 1)
-  cleaned = cleaned.replace(/(?<!\n)\s*(Q\d{1,4}\s*\[|Q\d{1,4}\b|Q\.\d+|Question\s*\d+|प्रश्न\s*\d+)/gi, "\n\n$1");
+  // Clean up horizontal spacing line by line
+  s = s
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n");
 
-  // Line breaks before Option Letters: (A), (B), (C), (D)
-  cleaned = cleaned.replace(/(?<!\n)\s*(\([A-Da-d]\))/g, "\n$1");
+  // Newline before Questions (Q1, Q2, Q1 [, Question 1, प्रश्न 1)
+  s = s.replace(/(?<!\n)\s*(Q\d{1,4}\b|Question\s*\d+|प्रश्न\s*\d+)/gi, "\n\n$1");
 
-  // Line breaks before Options formatted as A., B., C., D.
-  cleaned = cleaned.replace(/(?<!\n)\s*\b([A-D])[\.\)]\s+(?=[^\n])/g, "\n($1) ");
+  // Separate Options (A), (B), (C), (D) onto individual lines if combined
+  s = s.replace(/([^\n])\s*(\([A-Da-d]\))/g, "$1\n$2");
 
-  // Line breaks before Test Answers & Statuses
-  cleaned = cleaned.replace(/(?<!\n)\s*(Your Answer:|Correct Answer:|Correct|Incorrect|Answer:|Ans:|उत्तर:|सही उत्तर:|व्याख्या:|Explanation:)/gi, "\n$1");
+  // Separate Options formatted as A., B., C., D.
+  s = s.replace(/([^\n])\s*\b([A-D])[\.\)]\s+(?=[^\n])/g, "$1\n($2) ");
 
-  // Line breaks before Summary Header Items
-  cleaned = cleaned.replace(/(?<!\n)\s*(Test Submitted Successfully!|Here is your performance analysis\.|Total Questions|Attempted|Correct|Incorrect|Accuracy|Total Score|Detailed Review)/gi, "\n$1");
+  // Separate Answers and Status lines onto new lines
+  s = s.replace(/([^\n])\s*(Your Answer:|Correct Answer:|Correct|Incorrect|Answer:|Ans:|उत्तर:|सही उत्तर:|व्याख्या:|Explanation:)/gi, "$1\n$2");
 
-  // Page Dividers
-  cleaned = cleaned.replace(/\s*(===\s*पृष्ठ\s*\d+\s*===|---\s*Page\s*\d+\s*---)\s*/gi, "\n\n$1\n\n");
-
-  // Clean excessive blank lines
-  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
-
-  return cleaned.trim();
-};
-
-const parseRawTextToMCQs = (rawText: string): MCQ[] => {
-  if (!rawText || !rawText.trim()) return [];
-
-  const normalizedText = formatDocumentStructure(rawText);
-
-  let detectedTopic = "सामान्य ज्ञान (GK)";
-
-  const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—|–|-|\d)/i);
-  if (topicHeaderMatch && topicHeaderMatch[1].trim()) {
-    const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
-    if (foundTopic.length > 2) detectedTopic = foundTopic;
-  }
-
-  const rawBlocks = normalizedText.split(/(?=\n\s*(?:Q\d{1,4}|प्रश्न\s*\d+|\b\d{1,3}\b)[\.\:\-\)\s\[]+)/gi);
+  // Remove stray orphan '(' characters on empty lines
+  s = s.replace(/\n\s*\(\s*\n/g, "\n");    // Limit consecutive blank lines to at most 2   s = s.replace(/\n{3,}/g, "\n\n");    return s.trim(); };  const parseRawTextToMCQs = (rawText: string): MCQ[] => {   if (!rawText \vert{}\vert{} !rawText.trim()) return [];    const normalizedText = formatDocumentStructure(rawText);    let detectedTopic = "सामान्य ज्ञान (GK)";    const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—\vert{}–\vert{}-\vert{}\d)/i);   if (topicHeaderMatch && topicHeaderMatch[1].trim()) {     const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();     if (foundTopic.length > 2) detectedTopic = foundTopic;   }    const rawBlocks = normalizedText.split(/(?=\n\s*(?:Q\d{1,4}\vert{}प्रश्न\s*\d+\vert{}\b\d{1,3}\b)[\.\:\-\)\s\[]+)/gi);
   const parsedMcqs: MCQ[] = [];
 
   rawBlocks.forEach((block, idx) => {
@@ -213,21 +167,21 @@ const parseRawTextToMCQs = (rawText: string): MCQ[] => {
       }
     }
 
-    if (!qText && lines[0] && !/^[A-D][\.\:\-\)\s]+/i.test(lines[0])) {
+    if (!qText && lines[0] && !/^\(?\b[A-D]\)?[\.\:\-\)\s]+/i.test(lines[0])) {
       qText = lines[0].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
     }
 
     lines.forEach((line) => {
       const cleanL = line.replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
 
-      if (/^\(A\)|\bA[\.\:\-\)\s]+/i.test(cleanL)) {
-        optA = cleanL.replace(/^\(A\)|\bA[\.\:\-\)\s]+\s*/i, "").trim();
-      } else if (/^\(B\)|\bB[\.\:\-\)\s]+/i.test(cleanL)) {
-        optB = cleanL.replace(/^\(B\)|\bB[\.\:\-\)\s]+\s*/i, "").trim();
-      } else if (/^\(C\)|\bC[\.\:\-\)\s]+/i.test(cleanL)) {
-        optC = cleanL.replace(/^\(C\)|\bC[\.\:\-\)\s]+\s*/i, "").trim();
-      } else if (/^\(D\)|\bD[\.\:\-\)\s]+/i.test(cleanL)) {
-        optD = cleanL.replace(/^\(D\)|\bD[\.\:\-\)\s]+\s*/i, "").trim();
+      if (/^\(?A\)?[\.\:\-\s]+/i.test(cleanL)) {
+        optA = cleanL.replace(/^\(?A\)?[\.\:\-\s]*/i, "").trim();
+      } else if (/^\(?B\)?[\.\:\-\s]+/i.test(cleanL)) {
+        optB = cleanL.replace(/^\(?B\)?[\.\:\-\s]*/i, "").trim();
+      } else if (/^\(?C\)?[\.\:\-\s]+/i.test(cleanL)) {
+        optC = cleanL.replace(/^\(?C\)?[\.\:\-\s]*/i, "").trim();
+      } else if (/^\(?D\)?[\.\:\-\s]+/i.test(cleanL)) {
+        optD = cleanL.replace(/^\(?D\)?[\.\:\-\s]*/i, "").trim();
       } else if (
         cleanL.includes("Your Answer:") ||
         cleanL.includes("Correct Answer:") ||
@@ -289,7 +243,7 @@ const parseRawTextToMCQs = (rawText: string): MCQ[] => {
 // 3. MAIN REACT COMPONENT
 // -------------------------------------------------------------
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"mcq" | "docTool">("docTool");
+  const [activeTab, setActiveTab] = useState<"docTool" | "mcq">("docTool");
 
   // MCQ Generator States
   const [mcqList, setMcqList] = useState<MCQ[]>([
@@ -591,30 +545,45 @@ export default function Home() {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
 
-        // Spatial Y & X coordinate sorting for PDF text items
-        const items = (textContent.items as any[]).filter((it) => it.str && it.str.trim().length > 0);
+        const items = (textContent.items as any[]).filter((it) => it.str !== undefined);
 
-        // Group by Y position (row tolerance 6px)
-        const rows: { y: number; items: any[] }[] = [];
+        const lineBuckets: { y: number; items: any[] }[] = [];
         for (const item of items) {
-          const itemY = item.transform ? item.transform[5] : 0;
-          const existingRow = rows.find((r) => Math.abs(r.y - itemY) < 6);
-          if (existingRow) {
-            existingRow.items.push(item);
-          } else {
-            rows.push({ y: itemY, items: [item] });
+          const itemY = item.transform ? Math.round(item.transform[5]) : 0;
+          let bucket = lineBuckets.find((b) => Math.abs(b.y - itemY) <= 4);
+          if (!bucket) {
+            bucket = { y: itemY, items: [] };
+            lineBuckets.push(bucket);
           }
+          bucket.items.push(item);
         }
 
-        // Sort rows Top -> Bottom (Y descending in PDF)
-        rows.sort((a, b) => b.y - a.y);
+        lineBuckets.sort((a, b) => b.y - a.y);
 
         let pageStr = "";
-        for (const row of rows) {
-          // Sort items in row Left -> Right (X ascending)
-          row.items.sort((a, b) => (a.transform ? a.transform[4] : 0) - (b.transform ? b.transform[4] : 0));
-          const rowText = row.items.map((it) => it.str).join(" ");
-          pageStr += rowText + "\n";
+        for (const bucket of lineBuckets) {
+          bucket.items.sort((a, b) => (a.transform ? a.transform[4] : 0) - (b.transform ? b.transform[4] : 0));
+
+          let lineText = "";
+          let prevXEnd = null;
+
+          for (const item of bucket.items) {
+            const x = item.transform ? item.transform[4] : 0;
+            const width = item.width || (item.str ? item.str.length * 5 : 0);
+
+            if (prevXEnd !== null) {
+              const gap = x - prevXEnd;
+              if (gap > 3 && !lineText.endsWith(" ") && !item.str.startsWith(" ")) {
+                lineText += " ";
+              }
+            }
+            lineText += item.str;
+            prevXEnd = x + width;
+          }
+
+          if (lineText.trim()) {
+            pageStr += lineText.trim() + "\n";
+          }
         }
 
         fullText += pageStr + "\n";
@@ -641,7 +610,7 @@ export default function Home() {
   };
 
   // -------------------------------------------------------------
-  // 📄 SPATIAL COORDINATE-AWARE DOCUMENT EXTRACTOR
+  // 📄 ACCURATE SPATIAL DOCUMENT EXTRACTOR
   // -------------------------------------------------------------
   const handleExtractExactDocumentText = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -667,42 +636,50 @@ export default function Home() {
           const page = await pdf.getPage(i);
           const textContent = await page.getTextContent();
 
-          // Extract non-empty text items
-          const items = (textContent.items as any[]).filter((it) => it.str && it.str.length > 0);
+          const items = (textContent.items as any[]).filter((it) => it.str !== undefined);
 
-          // Group items into spatial lines based on Y-coordinate (tolerance: 6px)
+          // Group items by vertical Y coordinate
           const lineBuckets: { y: number; items: any[] }[] = [];
           for (const item of items) {
-            const itemY = item.transform ? item.transform[5] : 0;
-            const targetBucket = lineBuckets.find((b) => Math.abs(b.y - itemY) < 6);
-            if (targetBucket) {
-              targetBucket.items.push(item);
-            } else {
-              lineBuckets.push({ y: itemY, items: [item] });
+            const itemY = item.transform ? Math.round(item.transform[5]) : 0;
+            let bucket = lineBuckets.find((b) => Math.abs(b.y - itemY) <= 4);
+            if (!bucket) {
+              bucket = { y: itemY, items: [] };
+              lineBuckets.push(bucket);
             }
+            bucket.items.push(item);
           }
 
-          // Sort lines Top -> Bottom (PDF coordinates Y decreases going down)
+          // Sort lines Top -> Bottom (Y decreases downwards)
           lineBuckets.sort((a, b) => b.y - a.y);
 
           let pageLines = [];
           for (const bucket of lineBuckets) {
-            // Sort items inside line Left -> Right (X coordinate)
+            // Sort items in line Left -> Right (X coordinate)
             bucket.items.sort((a, b) => (a.transform ? a.transform[4] : 0) - (b.transform ? b.transform[4] : 0));
 
             let lineStr = "";
-            let lastX = null;
+            let prevXEnd = null;
 
             for (const item of bucket.items) {
-              const currentX = item.transform ? item.transform[4] : 0;
-              if (lastX !== null && currentX - lastX > 12 && !lineStr.endsWith(" ")) {
-                lineStr += "   "; // Add gap between side-by-side elements (e.g., Option A vs Option B)
+              const x = item.transform ? item.transform[4] : 0;
+              const width = item.width || (item.str ? item.str.length * 5 : 0);
+
+              if (prevXEnd !== null) {
+                const gap = x - prevXEnd;
+                // Add space if there is a gap between adjacent text chunks on the line
+                if (gap > 3 && !lineStr.endsWith(" ") && !item.str.startsWith(" ")) {
+                  lineStr += " ";
+                }
               }
+
               lineStr += item.str;
-              lastX = currentX + (item.width || item.str.length * 6);
+              prevXEnd = x + width;
             }
 
-            pageLines.push(lineStr);
+            if (lineStr.trim()) {
+              pageLines.push(lineStr.trim());
+            }
           }
 
           fullDocText += `=== पृष्ठ ${i} ===\n` + pageLines.join("\n") + "\n\n";
@@ -994,6 +971,7 @@ export default function Home() {
         w: 8.0,
         h: 0.5,
         fontSize: currentFontSizes.title,
+        fontFace: PPT_FONT,
         color: theme.titleColor,
         bold: true,
       });
