@@ -122,26 +122,7 @@ const formatDocumentStructure = (rawText: string): string => {
   s = s.replace(/([^\n])\s*(\([A-Da-d]\))/g, "$1\n$2");
   s = s.replace(/([^\n])\s*\b([A-D])[\.\)]\s+(?=[^\n])/g, "$1\n($2) ");
   s = s.replace(/([^\n])\s*(Your Answer:|Correct Answer:|Correct|Incorrect|Answer:|Ans:|उत्तर:|सही उत्तर:|व्याख्या:|Explanation:)/gi, "$1\n$2");
-  s = s.replace(/\n\s*\(\s*\n/g, "\n");
-  s = s.replace(/\n{3,}/g, "\n\n");
-
-  return s.trim();
-};
-
-const parseRawTextToMCQs = (rawText: string): MCQ[] => {
-  if (!rawText || !rawText.trim()) return [];
-
-  const normalizedText = formatDocumentStructure(rawText);
-
-  let detectedTopic = "सामान्य ज्ञान (GK)";
-
-  const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—|–|-|\d)/i);
-  if (topicHeaderMatch && topicHeaderMatch[1].trim()) {
-    const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();
-    if (foundTopic.length > 2) detectedTopic = foundTopic;
-  }
-
-  const rawBlocks = normalizedText.split(/(?=\n\s*(?:Q\d{1,4}|प्रश्न\s*\d+|\b\d{1,3}\b)[\.\:\-\)\s\[]+)/gi);
+  s = s.replace(/\n\s*\(\s*\n/g, "\n");   s = s.replace(/\n{3,}/g, "\n\n");    return s.trim(); };  const parseRawTextToMCQs = (rawText: string): MCQ[] => {   if (!rawText \vert{}\vert{} !rawText.trim()) return [];    const normalizedText = formatDocumentStructure(rawText);    let detectedTopic = "सामान्य ज्ञान (GK)";    const topicHeaderMatch = normalizedText.match(/^[^\n\d]*?([\u0900-\u097F\w\s]+?)(?:—\vert{}–\vert{}-\vert{}\d)/i);   if (topicHeaderMatch && topicHeaderMatch[1].trim()) {     const foundTopic = topicHeaderMatch[1].replace(/^[🌍📖✅✔•\-\s]+/gu, "").trim();     if (foundTopic.length > 2) detectedTopic = foundTopic;   }    const rawBlocks = normalizedText.split(/(?=\n\s*(?:Q\d{1,4}\vert{}प्रश्न\s*\d+\vert{}\b\d{1,3}\b)[\.\:\-\)\s\[]+)/gi);
   const parsedMcqs: MCQ[] = [];
 
   rawBlocks.forEach((block, idx) => {
@@ -241,14 +222,45 @@ const parseRawTextToMCQs = (rawText: string): MCQ[] => {
 };
 
 // -------------------------------------------------------------
-// 3. FAIL-SAFE PDF PARSER (DIRECT IN-MEMORY ENGINE)
+// 3. OCR & IMAGE extraction Engine (HINDI + ENGLISH)
 // -------------------------------------------------------------
-const extractPdfTextSafe = async (file: File): Promise<string> => {
+const loadTesseract = (): Promise<any> => {
+  return new Promise((resolve, reject) => {
+    if ((window as any).Tesseract) {
+      resolve((window as any).Tesseract);
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    script.onload = () => resolve((window as any).Tesseract);
+    script.onerror = () => reject(new Error("OCR इंजन लोड करने में समस्या आई। कृपया इंटरनेट कनेक्शन जाँचें।"));
+    document.head.appendChild(script);
+  });
+};
+
+const runOcrOnImageSource = async (
+  imageSource: File | Blob | string | HTMLCanvasElement,
+  onStatusUpdate?: (msg: string) => void
+): Promise<string> => {
+  if (onStatusUpdate) onStatusUpdate("⏳ OCR इंजन चालू हो रहा है (Hindi + English)...");
+  const Tesseract = await loadTesseract();
+
+  if (onStatusUpdate) onStatusUpdate("🔍 इमेज से टेक्स्ट पढ़ा जा रहा है...");
+  const worker = await Tesseract.createWorker("hin+eng");
+
+  const result = await worker.recognize(imageSource);
+  await worker.terminate();
+
+  return result.data.text || "";
+};
+
+const extractPdfTextSafe = async (
+  file: File,
+  onStatusUpdate?: (msg: string) => void
+): Promise<string> => {
   try {
     const pdfjsLib = await import("pdfjs-dist/build/pdf");
-    
-    // Disable external worker completely to prevent CDN network block/CORS issues
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version || "3.11.174"}/build/pdf.worker.min.js`;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version || "3.11.174"}/build/pdf.worker.min.js`;
 
     const arrayBuffer = await file.arrayBuffer();
     const loadingTask = pdfjsLib.getDocument({
@@ -309,29 +321,35 @@ const extractPdfTextSafe = async (file: File): Promise<string> => {
       fullText += `=== पृष्ठ ${i} ===\n` + pageLines.join("\n") + "\n\n";
     }
 
-    return fullText;
-  } catch (firstErr) {
-    console.warn("Primary PDF worker failed, executing fallback reader...", firstErr);
-
-    // Secondary Direct Fallback Reader
-    try {
-      const pdfjsLib = await import("pdfjs-dist/build/pdf");
-      const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      let textOutput = "";
+    // 📸 SCANNED PDF AUTO-DETECTION & OCR FALLBACK
+    if (fullText.replace(/=== पृष्ठ \d+ ===/g, "").trim().length < 15) {
+      if (onStatusUpdate) onStatusUpdate("📷 स्कैन्ड/इमेज PDF की पहचान हुई! OCR चालू हो रहा है...");
+      let scannedPdfText = "";
 
       for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        if (onStatusUpdate) onStatusUpdate(`📷 पृष्ठ ${pageNum}/${pdf.numPages} का OCR किया जा रहा है...`);
         const page = await pdf.getPage(pageNum);
-        const content = await page.getTextContent();
-        const strings = content.items.map((item: any) => item.str || "");
-        textOutput += `=== पृष्ठ ${pageNum} ===\n` + strings.join(" ") + "\n\n";
+        const viewport = page.getViewport({ scale: 2.0 });
+
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d");
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+
+        if (context) {
+          await page.render({ canvasContext: context, viewport }).promise;
+          const pageOcrText = await runOcrOnImageSource(canvas);
+          scannedPdfText += `=== पृष्ठ ${pageNum} ===\n` + pageOcrText + "\n\n";
+        }
       }
 
-      return textOutput;
-    } catch (secondErr: any) {
-      console.error("Secondary PDF Reader Failed:", secondErr);
-      throw new Error("PDF फ़ाइल पढ़ी नहीं जा सकी। कृपया जाँचें कि फ़ाइल पासवर्ड-सुरक्षित या इमेज स्कैन्ड तो नहीं है।");
+      return scannedPdfText;
     }
+
+    return fullText;
+  } catch (firstErr) {
+    console.warn("Primary PDF reader failed, trying fallback OCR...", firstErr);
+    return await runOcrOnImageSource(file, onStatusUpdate);
   }
 };
 
@@ -372,6 +390,7 @@ export default function Home() {
   const [extractedDocText, setExtractedDocText] = useState("");
   const [extractedFileName, setExtractedFileName] = useState("");
   const [isExtractingDoc, setIsExtractingDoc] = useState(false);
+  const [extractionStatusMsg, setExtractionStatusMsg] = useState("");
 
   const currentMCQ = mcqList[currentIndex] || mcqList[0];
   const activeTheme = DESIGN_THEMES[selectedThemeKey];
@@ -625,10 +644,11 @@ export default function Home() {
     if (!file) return;
 
     try {
-      const fullText = await extractPdfTextSafe(file);
+      setExtractionStatusMsg("⏳ PDF/इमेज पढ़ा जा रहा है...");
+      const fullText = await extractPdfTextSafe(file, (msg) => setExtractionStatusMsg(msg));
 
       if (!fullText.trim()) {
-        alert("यह एक इमेज/स्कैन्ड PDF है।");
+        alert("टेक्स्ट नहीं पढ़ा जा सका। फ़ाइल खाली या धुंधली हो सकती है।");
         return;
       }
 
@@ -637,18 +657,20 @@ export default function Home() {
       if (parsedMcqs.length > 0) {
         setMcqList(parsedMcqs);
         setCurrentIndex(0);
-        alert(`🎉 सफलता! PDF फ़ाइल से सभी ${parsedMcqs.length} प्रश्न लोड हो चुके हैं!`);
+        alert(`🎉 सफलता! फ़ाइल से सभी ${parsedMcqs.length} प्रश्न लोड हो चुके हैं!`);
       } else {
-        alert("PDF फ़ाइल से प्रश्न पढ़ने में समस्या आई।");
+        alert("फ़ाइल से प्रश्न पढ़ने में समस्या आई।");
       }
     } catch (err: any) {
       console.error("PDF Parsing Error:", err);
-      alert(`PDF फ़ाइल प्रोसेस करने में समस्या आई: ${err?.message || "अज्ञात त्रुटि"}`);
+      alert(`फ़ाइल प्रोसेस करने में समस्या आई: ${err?.message || "अज्ञात त्रुटि"}`);
+    } finally {
+      setExtractionStatusMsg("");
     }
   };
 
   // -------------------------------------------------------------
-  // 📄 ACCURATE SPATIAL DOCUMENT EXTRACTOR
+  // 📄 ACCURATE SPATIAL DOCUMENT & IMAGE EXTRACTOR
   // -------------------------------------------------------------
   const handleExtractExactDocumentText = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -656,13 +678,17 @@ export default function Home() {
 
     setIsExtractingDoc(true);
     setExtractedFileName(file.name.replace(/\.[^/.]+$/, ""));
+    setExtractionStatusMsg("⏳ प्रक्रिया शुरू हो रही है...");
 
     try {
       let rawExtractedText = "";
-      const extension = file.name.split(".").pop()?.toLowerCase();
+      const extension = file.name.split(".").pop()?.toLowerCase() || "";
+      const isImage = ["png", "jpg", "jpeg", "webp", "bmp"].includes(extension) || file.type.startsWith("image/");
 
-      if (extension === "pdf") {
-        rawExtractedText = await extractPdfTextSafe(file);
+      if (isImage) {
+        rawExtractedText = await runOcrOnImageSource(file, (msg) => setExtractionStatusMsg(msg));
+      } else if (extension === "pdf") {
+        rawExtractedText = await extractPdfTextSafe(file, (msg) => setExtractionStatusMsg(msg));
       } else if (extension === "docx") {
         const arrayBuffer = await file.arrayBuffer();
         const result = await mammoth.extractRawText({ arrayBuffer });
@@ -670,23 +696,23 @@ export default function Home() {
       } else if (extension === "txt") {
         rawExtractedText = await file.text();
       } else {
-        alert("केवल PDF, Word (.docx) या Text (.txt) फ़ाइल अपलोड करें!");
-        setIsExtractingDoc(false);
-        return;
+        // Fallback OCR for any unknown visual document
+        rawExtractedText = await runOcrOnImageSource(file, (msg) => setExtractionStatusMsg(msg));
       }
 
       if (rawExtractedText.trim()) {
         const structuredText = formatDocumentStructure(rawExtractedText);
         setExtractedDocText(structuredText);
-        alert(`🎉 सफलता! '${file.name}' से पूरी तरह व्यवस्थित टेक्स्ट निकाल लिया गया है!`);
+        alert(`🎉 सफलता! '${file.name}' से पूरी तरह टेक्स्ट निकाल लिया गया है!`);
       } else {
-        alert("फ़ाइल में से टेक्स्ट नहीं पढ़ा जा सका। फ़ाइल खाली या स्कैन्ड इमेज हो सकती है।");
+        alert("फ़ाइल में से टेक्स्ट नहीं पढ़ा जा सका। फ़ाइल खाली या अत्यधिक धुंधली हो सकती है।");
       }
     } catch (err: any) {
       console.error("Document Extraction Error:", err);
-      alert(`दस्तावेज़ से टेक्स्ट निकालने में समस्या आई! (${err?.message || "कृपया फ़ाइल की जाँच करें।"})`);
+      alert(`दस्तावेज़ से टेक्स्ट निकालने में समस्या आई: ${err?.message || "कृपया फ़ाइल की जाँच करें।"}`);
     } finally {
       setIsExtractingDoc(false);
+      setExtractionStatusMsg("");
     }
   };
 
@@ -1119,7 +1145,7 @@ export default function Home() {
                   📄 Exact Document Copy Generator (हूबहू कॉपी टूल)
                 </h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  हिंदी या अंग्रेज़ी की PDF, Word (.docx) या Text (.txt) फ़ाइल अपलोड करें और उसका पूरा टेक्स्ट प्राप्त करें।
+                  हिंदी या अंग्रेज़ी की PDF, Word (.docx), Text (.txt) या इमेज (.png, .jpg) अपलोड करें और उसका पूरा टेक्स्ट प्राप्त करें।
                 </p>
               </div>
 
@@ -1161,16 +1187,16 @@ export default function Home() {
                 📁
               </div>
               <h3 className="text-base font-bold text-slate-200 mb-1">
-                यहाँ हिंदी या अंग्रेज़ी फ़ाइल अपलोड करें
+                यहाँ फ़ाइल या इमेज अपलोड करें
               </h3>
               <p className="text-xs text-slate-400 mb-4">
-                समर्थित फ़ाइल फॉर्मेट: PDF (.pdf), Word (.docx), Plain Text (.txt)
+                समर्थित फ़ाइल फॉर्मेट: PDF (.pdf), Word (.docx), Plain Text (.txt), Images (.png, .jpg, .jpeg)
               </p>
               <label className="inline-flex cursor-pointer items-center justify-center rounded-xl bg-purple-600 px-6 py-3 text-sm font-bold text-white shadow-lg transition hover:bg-purple-500">
-                {isExtractingDoc ? "⏳ टेक्स्ट निकाला जा रहा है..." : "📂 Select PDF / Word File"}
+                {isExtractingDoc ? (extractionStatusMsg || "⏳ टेक्स्ट निकाला जा रहा है...") : "📂 Select File or Image"}
                 <input
                   type="file"
-                  accept=".pdf, .docx, .txt"
+                  accept=".pdf, .docx, .txt, .png, .jpg, .jpeg, .webp, .bmp, image/*"
                   onChange={handleExtractExactDocumentText}
                   disabled={isExtractingDoc}
                   className="hidden"
@@ -1197,7 +1223,7 @@ export default function Home() {
               </div>
             ) : (
               <div className="rounded-xl border border-white/5 bg-slate-950/50 p-12 text-center text-xs text-slate-500">
-                💡 फ़ाइल अपलोड करते ही यहाँ पूरा टेक्स्ट आ जाएगा। आप उस टेक्स्ट में संपादन (Edit) भी कर सकते हैं।
+                💡 फ़ाइल या इमेज अपलोड करते ही यहाँ पूरा टेक्स्ट आ जाएगा। आप उस टेक्स्ट में संपादन (Edit) भी कर सकते हैं।
               </div>
             )}
           </div>
@@ -1373,10 +1399,10 @@ export default function Home() {
                   </div>
 
                   <div className="rounded-xl border border-dashed border-red-500/40 bg-red-950/20 p-2.5">
-                    <h3 className="font-bold text-[10px] text-red-400 mb-1">📕 PDF (.pdf)</h3>
+                    <h3 className="font-bold text-[10px] text-red-400 mb-1">📕 PDF / Image</h3>
                     <input
                       type="file"
-                      accept=".pdf"
+                      accept=".pdf, .png, .jpg, .jpeg, .webp, .bmp, image/*"
                       onChange={handlePdfUpload}
                       className="w-full cursor-pointer rounded bg-slate-800 p-1 text-[9px] text-slate-300 file:mr-1 file:rounded file:border-0 file:bg-red-600 file:px-1.5 file:py-0.5 file:text-[9px] file:font-semibold file:text-white"
                     />
