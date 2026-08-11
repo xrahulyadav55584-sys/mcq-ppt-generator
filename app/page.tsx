@@ -93,7 +93,7 @@ const fontSizes = {
 };
 
 // -------------------------------------------------------------
-// 2. SMART AUTO-CORRECTION DICTIONARY FOR BROKEN PDF FONTS
+// 2. ULTIMATE HINDI CLEANER & BRACKET FIXER
 // -------------------------------------------------------------
 const cleanText = (text: string) => {
   if (!text) return "";
@@ -107,7 +107,7 @@ const applySmartDictionaryCorrections = (text: string): string => {
   if (!text) return "";
   let s = text;
 
-  // 🛠️ यहाँ PDF के टूटे हुए हिंदी शब्दों को सीधे ठीक किया जाता है
+  // 🛠️ डैमेज्ड हिंदी शब्दों और गायब मात्राओं का सटीक रिप्लेसमेंट
   const replacements: { [key: string]: string } = {
     "फिटर  ोरी": "फिटर थ्योरी",
     "फिटर ोरी": "फिटर थ्योरी",
@@ -115,6 +115,7 @@ const applySmartDictionaryCorrections = (text: string): string => {
     "असे म्बली": "असेंबली",
     "असेम्बली": "असेंबली",
     "निमाण म": "निर्माण में",
+    "निमाण": "निर्माण",
     "परष्करण": "परिष्करण",
     "परक्षण": "परीक्षण",
     "अपघषक": "अपघर्षक",
@@ -127,7 +128,6 @@ const applySmartDictionaryCorrections = (text: string): string => {
     s = s.replace(regex, fixed);
   }
 
-  // टूटी मात्राओं को स्वचालित रूप से ठीक करना
   s = s.replace(/\u093F\s*([\u0904-\u0939\u0958-\u095F])/g, "$1\u093F");
   
   return s;
@@ -138,23 +138,24 @@ const formatDocumentStructure = (rawText: string): string => {
 
   let s = applySmartDictionaryCorrections(rawText);
 
+  // 🗑️ फ़ालतू और अकेले आने वाले ओपनिंग ब्रैकेट '(' और खाली लाइनों को हमेशा के लिए हटाना
   s = s
     .split("\n")
     .map((line) => line.replace(/[ \t]+/g, " ").trim())
-    .filter((line) => line.length > 0)
+    .filter((line) => line.length > 0 && line !== "(" && line !== ")" && line !== "(-")
     .join("\n");
 
-  // उत्तर की टूटी लाइनों को ठीक करना
+  // उत्तर की टूटी लाइनों को जोड़ना
   s = s.replace(/Your\s*Answer:\s*\n+\s*(\([A-D]\)\s*-?)\s*\n+\s*(Correct|Incorrect)/gi, "Your Answer: $1 $2");
   s = s.replace(/Your\s*Answer:\s*(\([A-D]\)\s*-?)\s*\n+\s*(Correct|Incorrect)/gi, "Your Answer: $1 $2");
   s = s.replace(/Correct\s*Answer:\s*\n+\s*(\([A-D]\)\s*.*)/gi, "Correct Answer: $1");
 
-  // प्रश्नों और विकल्पों को सही क्रम में रखना
+  // प्रश्नों और विकल्पों को उनकी सही जगह पर व्यवस्थित करना
   s = s.replace(/(?<!\n)\s*(Q\d{1,4}\b|Question\s*\d+|प्रश्न\s*\d+)/gi, "\n\n$1");
   s = s.replace(/([^\n])\s*(\([A-Da-d]\))/g, "$1\n$2");
   s = s.replace(/([^\n])\s*\b([A-D])[\.\)]\s+(?=[^\n])/g, "$1\n($2) ");
   s = s.replace(/([^\n])\s*(Your Answer:|Correct Answer:|उत्तर:|सही उत्तर:|व्याख्या:|Explanation:)/gi, "$1\n$2");
-  
+
   s = s.replace(/\n{3,}/g, "\n\n");
   return s.trim();
 };
@@ -272,8 +273,44 @@ const parseRawTextToMCQs = (rawText: string): MCQ[] => {
 };
 
 // -------------------------------------------------------------
-// 3. PDF EXTRACTOR ENGINE
+// 3. OCR & ROBUST PDF ENGINE
 // -------------------------------------------------------------
+const loadTesseract = (): Promise<any> => {
+  return new Promise((resolve, reject) => {
+    if ((window as any).Tesseract) {
+      resolve((window as any).Tesseract);
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js";
+    script.onload = () => resolve((window as any).Tesseract);
+    script.onerror = () => {
+      const script2 = document.createElement("script");
+      script2.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+      script2.onload = () => resolve((window as any).Tesseract);
+      script2.onerror = () => reject(new Error("OCR लाइब्रेरी लोड नहीं हो सकी। इंटरनेट कनेक्शन जाँचें।"));
+      document.head.appendChild(script2);
+    };
+    document.head.appendChild(script);
+  });
+};
+
+const runOcrOnImageSource = async (
+  imageSource: File | Blob | string | HTMLCanvasElement,
+  onStatusUpdate?: (msg: string) => void
+): Promise<string> => {
+  if (onStatusUpdate) onStatusUpdate("⏳ OCR इंजन चालू हो रहा है (Hindi + English)...");
+  const Tesseract = await loadTesseract();
+
+  if (onStatusUpdate) onStatusUpdate("🔍 पिक्सल स्कैन करके टेक्स्ट पढ़ा जा रहा है...");
+  const worker = await Tesseract.createWorker("hin+eng");
+
+  const result = await worker.recognize(imageSource);
+  await worker.terminate();
+
+  return result.data.text || "";
+};
+
 const extractPdfTextSafe = async (
   file: File,
   onStatusUpdate?: (msg: string) => void
@@ -301,65 +338,30 @@ const extractPdfTextSafe = async (
     });
 
     const pdf = await loadingTask.promise;
-    let fullText = "";
+    let fullOcrText = "";
 
-    for (let i = 1; i <= pdf.numPages; i++) {
-      if (onStatusUpdate) onStatusUpdate(`📄 पृष्ठ ${i}/${pdf.numPages} पढ़ा जा रहा है...`);
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
+    // 🌟 हर पेज को HD कैनवास पर रेंडर करके सीधे OCR से चलाना ताकि कोई भी फॉन्ट या ब्रैकेट की समस्या न आए
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      if (onStatusUpdate) onStatusUpdate(`📷 पृष्ठ ${pageNum}/${pdf.numPages} का हाई-क्वालिटी OCR किया जा रहा है...`);
+      const page = await pdf.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 2.0 });
 
-      const items = (textContent.items as any[]).filter((it) => it && typeof it.str === "string");
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
 
-      const lineBuckets: { y: number; items: any[] }[] = [];
-      for (const item of items) {
-        const itemY = item.transform ? Math.round(item.transform[5]) : 0;
-        let bucket = lineBuckets.find((b) => Math.abs(b.y - itemY) <= 4);
-        if (!bucket) {
-          bucket = { y: itemY, items: [] };
-          lineBuckets.push(bucket);
-        }
-        bucket.items.push(item);
-      }
-
-      lineBuckets.sort((a, b) => b.y - a.y);
-
-      let pageLines: string[] = [];
-      for (const bucket of lineBuckets) {
-        bucket.items.sort((a, b) => (a.transform ? a.transform[4] : 0) - (b.transform ? b.transform[4] : 0));
-
-        let lineStr = "";
-        let prevXEnd: number | null = null;
-
-        for (const item of bucket.items) {
-          const x = item.transform ? item.transform[4] : 0;
-          const width = item.width || (item.str ? item.str.length * 5 : 0);
-
-          if (prevXEnd !== null) {
-            const gap = x - prevXEnd;
-            if (gap > 3 && !lineStr.endsWith(" ") && !item.str.startsWith(" ")) {
-              lineStr += " ";
-            }
-          }
-
-          lineStr += item.str;
-          prevXEnd = x + width;
-        }
-
-        if (lineStr.trim()) {
-          pageLines.push(lineStr.trim());
-        }
-      }
-
-      const pageResult = pageLines.join("\n").trim();
-      if (pageResult.length > 0) {
-        fullText += `=== पृष्ठ ${i} ===\n` + pageResult + "\n\n";
+      if (context) {
+        await page.render({ canvasContext: context, viewport }).promise;
+        const pageOcrText = await runOcrOnImageSource(canvas, onStatusUpdate);
+        fullOcrText += `=== पृष्ठ ${pageNum} ===\n` + pageOcrText + "\n\n";
       }
     }
 
-    return fullText;
+    return fullOcrText;
   } catch (err: any) {
-    console.error("PDF Parsing Error:", err);
-    throw new Error("PDF पढ़ने में त्रुटि: " + (err?.message || "फ़ाइल पासवर्ड-सुरक्षित या डैमेज हो सकती है।"));
+    console.error("PDF Full OCR Fallback Error:", err);
+    return await runOcrOnImageSource(file, onStatusUpdate);
   }
 };
 
